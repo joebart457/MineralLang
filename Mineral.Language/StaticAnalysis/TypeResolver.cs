@@ -1,0 +1,750 @@
+﻿using Mineral.Language.Declarations;
+using Mineral.Language.Expressions;
+using Mineral.Language.LValues;
+using Mineral.Language.Statements;
+using System.Reflection;
+using Tokenizer.Core.Constants;
+using Tokenizer.Core.Models;
+
+namespace Mineral.Language.StaticAnalysis;
+
+public class TypeResolver
+{
+    private static readonly Dictionary<Token, ConcreteType> BuiltinTypes = new Dictionary<Token, ConcreteType>()
+    {
+        { new(BuiltinTokenTypes.Word, "int", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.Int) },
+        { new(BuiltinTokenTypes.Word, "float", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.Float) },
+        { new(BuiltinTokenTypes.Word, "string", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.String) },
+        { new(BuiltinTokenTypes.Word, "void", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.Void) },
+        { new(BuiltinTokenTypes.Word, "func", Location.Zero, Location.Zero ), new CallableType(null, new ConcreteType(BuiltinType.Void), new(), false)},
+    };
+
+    private FunctionKey CreateFunctionKey(ModuleErrors errors, ModuleContext module, FunctionDeclaration functionDeclaration)
+    {
+        var parameterTypes = new List<ConcreteType>();
+        foreach (var parameter in functionDeclaration.Parameters)
+        {
+            var parameterType = ResolveDeclaredType(errors, module, parameter.ParameterType);
+            parameterTypes.Add(parameterType);
+        }
+        return new FunctionKey(functionDeclaration.FunctionName, parameterTypes);
+    }
+
+    private ConcreteType ResolveDeclaredType(ModuleErrors errors, ModuleContext module, TypeSymbol typeSymbol)
+    {
+        var moduleToSearch = module;
+        if (typeSymbol.ModuleName != null)
+        {
+            if (!module.TryGetImportedModule(typeSymbol.ModuleName, out var importedModule))
+            {
+                errors.Add(typeSymbol, $"unable to find module '{typeSymbol.ModuleName.Lexeme}' verify module exists and is imported");
+                return NativeTypes.Void;
+            }
+            moduleToSearch = importedModule;
+        } 
+
+
+        if (!typeSymbol.HasGenericTypeArguments)
+        {
+            // If there is no module and no type arguments check native types
+            if (typeSymbol.ModuleName == null && BuiltinTypes.TryGetValue(typeSymbol.TypeName, out var builtinType))
+                return builtinType;
+            // if there are no type arguments and no native type is found, check types within the search module
+            if (!moduleToSearch.TryGetType(typeSymbol.TypeName, out var type) || type == null)
+            {
+                errors.Add(typeSymbol.TypeName, $"Unable to resolve typename '{typeSymbol.TypeName.Lexeme}'");
+                return NativeTypes.Void;
+            }
+            return type;
+        }
+
+        if (typeSymbol.ModuleName == null && BuiltinTypes.TryGetValue(typeSymbol.TypeName, out var potentialFuncType) && potentialFuncType is CallableType)
+        {
+            var parameterTypes = new List<ConcreteType>();
+            ConcreteType returnType = NativeTypes.Void;
+            foreach(var genericArgument in typeSymbol.GenericTypeArguments)
+            {
+                var resolvedTypeArgument = ResolveDeclaredType(errors, module, genericArgument);
+                if (genericArgument == typeSymbol.GenericTypeArguments.Last())
+                    returnType = resolvedTypeArgument;
+                else
+                    parameterTypes.Add(resolvedTypeArgument);
+            }
+            var parameters = parameterTypes.Select(x => new FunctionParameter(new Token(BuiltinTokenTypes.Word, "_", Location.Zero, Location.Zero), x)).ToList();
+            return new CallableType(null, returnType, parameters, typeSymbol.IsErrorable);
+        }
+
+        errors.Add(typeSymbol, $"Unable to resolve typename '{typeSymbol}'");
+        return NativeTypes.Void;
+    }
+
+    public ModuleContext ProcessModule(ProgramContext programContext, Token moduleName, ImportDeclaration importDeclaration, List<TypeDeclaration> typeDeclarations, List<FunctionDeclaration> functionDeclarations)
+    {
+
+        var module = programContext.GetOrAddModule(moduleName);
+        var errors = new ModuleErrors();
+
+        // First process imported modules
+        foreach(var import in importDeclaration.Imports)
+        {
+            if (importDeclaration.Imports.Count(x => x.Lexeme == import.Lexeme) > 1)
+            {
+                errors.Add(import, $"duplicate import of '{import.Lexeme}' will be ignored");
+                continue;
+            }
+            if (!module.TryAddImportedModule(import))
+            {
+                errors.Add(import, $"module {import.Lexeme} is not found in workspace");
+            }
+
+        }
+
+
+        // First pass, register all type names for forward references
+        foreach (var typeDeclaration in typeDeclarations)
+        {
+            var structType = new StructType(typeDeclaration.TypeName);
+            module.TryAddType(errors, typeDeclaration.TypeName, structType);
+        }
+
+        // Second pass, resolve member types
+        foreach (var typeDeclaration in typeDeclarations)
+        {
+            if (!module.TryGetType(typeDeclaration.TypeName, out var declaredStructType) || declaredStructType == null)
+            {
+                errors.Add(typeDeclaration.TypeName, $"Type '{typeDeclaration.TypeName.Lexeme}' is not defined");
+                continue;
+            }
+            foreach (var member in typeDeclaration.Members)
+            {
+                var memberType = ResolveDeclaredType(errors, module, member.FieldType);
+                declaredStructType.Members.Add(new StructTypeField(member.FieldName, memberType));
+            }
+        }
+
+        // First pass, register all function names for forward references
+        foreach (var functionDeclaration in functionDeclarations)
+        {
+            RegisterFunction(errors, module, functionDeclaration);
+        }
+
+        // Second pass, resolve function bodies
+        foreach (var functionDeclaration in functionDeclarations)
+        {
+            ResolveFunction(errors, module, functionDeclaration);
+        }
+
+       
+        return module;
+
+    }
+
+    public void RegisterFunction(ModuleErrors errors, ModuleContext module, FunctionDeclaration functionDeclaration)
+    {
+        var context = new FunctionContext(module);
+        context.ReturnType = ResolveDeclaredType(errors, module, functionDeclaration.ReturnType);
+        context.IsErrorable = functionDeclaration.IsErrorable;
+        foreach (var parameter in functionDeclaration.Parameters)
+        {
+            var parameterType = ResolveDeclaredType(errors, module,parameter.ParameterType);
+            if (context.Parameters.ContainsKey(parameter.ParameterName))
+            {
+                errors.Add(parameter.ParameterName, $"Parameter '{parameter.ParameterName.Lexeme}' is already defined in function '{functionDeclaration.FunctionName.Lexeme}'");
+                context.Parameters[new Token(BuiltinTokenTypes.Word, "?", Location.Zero, Location.Zero)] = parameterType; // register as unkown parameter to avoid cascading errors
+                continue;
+            }
+            context.Parameters[parameter.ParameterName] = parameterType;
+        }
+        var key = CreateFunctionKey(errors, module, functionDeclaration);
+        var methodGroup = module.GetOrAddMethodGroup(functionDeclaration.FunctionName);
+        methodGroup.TryAddOverload(errors, key, context);
+    }
+
+    public void ResolveFunction(ModuleErrors errors, ModuleContext module, FunctionDeclaration functionDeclaration)
+    {
+        var functionKey = CreateFunctionKey(errors, module, functionDeclaration);
+        if (!module.TryGetMethodOverload(functionKey, out var functionContext))
+        {
+            errors.Add(functionDeclaration.FunctionName, $"Function '{functionKey}' is not registered");
+            return;
+        }
+        
+        foreach (var statement in functionDeclaration.BodyStatements)
+        {
+            Resolve(errors, module, functionContext, statement);
+            functionContext.BodyStatements.Add(statement);
+        }
+        if (!functionContext.EncounteredReturnStatement && !functionContext.ReturnType.IsAssignableFrom(new ConcreteType(BuiltinType.Void))) // TOdo STATIC VOID?
+        {
+            errors.Add(functionDeclaration.FunctionName, $"Function '{functionDeclaration.FunctionName.Lexeme}' is missing a return statement");
+        }
+    }
+
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, StatementBase statement)
+    {
+        switch (statement)
+        {
+            case ReturnStatement returnStatement:
+                Resolve(errors, module, context, returnStatement);
+                break;
+            case ErrorStatement errorStatement:
+                Resolve(errors, module, context, errorStatement);
+                break;
+            case ConditionalStatement conditionalStatement:
+                Resolve(errors, module, context, conditionalStatement);
+                break;
+            case AssignmentStatement assignmentStatement:
+                Resolve(errors, module, context, assignmentStatement);
+                break;
+            default:
+                errors.Add(statement, $"Unknown statement type '{statement.GetType()}'"); // TODO statement start, end
+                break;
+        }
+    }
+
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, ReturnStatement returnStatement)
+    {
+        Resolve(errors, module, context, returnStatement.ValueToReturn);
+        var returnType = returnStatement.ValueToReturn.ConcreteType;
+        if (!context.ReturnType.IsAssignableFrom(returnType))
+        {
+            errors.Add(returnStatement, $"Function '{context.FunctionName.Lexeme}' expected return type '{context.ReturnType}' but got '{returnType}'");
+        }
+        context.EncounteredReturnStatement = true;
+    }
+
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, ErrorStatement errorStatement)
+    {
+        Resolve(errors, module, context, errorStatement.ErrorToReturn);
+        if (!errorStatement.ErrorToReturn.ConcreteType.IsErrorType())
+        {
+            errors.Add(errorStatement, $"Error statement must return an error type, but got '{errorStatement.ErrorToReturn.ConcreteType}'");
+        }
+    }
+
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, ConditionalStatement conditionalStatement)
+    {
+        Resolve(errors, module, context, conditionalStatement.ConditionalTarget);
+        Resolve(errors, module, context, conditionalStatement.ThenBlock);
+        var conditionType = conditionalStatement.ConditionalTarget.ConcreteType;
+        if (!conditionType.IsConditionalTestable())
+        {
+            errors.Add(conditionalStatement.ConditionalTarget, $"Cannot use type '{conditionType}' as a conditional test");
+        }
+    }
+
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, AssignmentStatement assignmentStatement)
+    {
+        Resolve(errors, module, context, assignmentStatement.Value);
+        var valueType = assignmentStatement.Value.ConcreteType;
+        if (assignmentStatement.AssignmentTarget is IdentifierLValue identifierExpression)
+        {
+            assignmentStatement.AssignmentTarget.TagAsType(ResolveOrCreateVariable(context, identifierExpression.VariableName, assignmentStatement.Value.ConcreteType));
+        }
+        else Resolve(errors, module, context, assignmentStatement.AssignmentTarget);
+
+        if (!assignmentStatement.AssignmentTarget.ConcreteType.IsAssignableFrom(valueType))
+        {
+            errors.Add(assignmentStatement.AssignmentTarget, $"Cannot assign value of type '{valueType}' to lvalue of type '{assignmentStatement.AssignmentTarget.ConcreteType}");
+        }
+
+        if (assignmentStatement.ErrorTarget != null)
+        {
+            if (!(assignmentStatement.Value.ConcreteType is CallableType callableType && callableType.IsErrorable))
+            {
+                errors.Add(assignmentStatement.Value, $"expect errorable expression on right hand side of error assignment");
+            }
+            if (assignmentStatement.ErrorTarget is IdentifierLValue errorIdentifierExpression)
+            {
+                assignmentStatement.ErrorTarget.TagAsType(ResolveOrCreateVariable(context, errorIdentifierExpression.VariableName, NativeTypes.Error));
+            }
+            else Resolve(errors, module, context, assignmentStatement.ErrorTarget);
+            if (!assignmentStatement.ErrorTarget.ConcreteType.IsErrorType())
+            {
+                errors.Add(assignmentStatement.ErrorTarget, $"Error target must be of error type, but got '{assignmentStatement.ErrorTarget.ConcreteType}'");
+            }
+        }
+    }
+
+    private ConcreteType ResolveOrCreateVariable(FunctionContext context, Token variableName, ConcreteType attemptedAssignmentType)
+    {
+        if (context.LocalVariables.TryGetValue(variableName, out var existingType))
+        {
+            return existingType;
+        }
+        else if (context.Parameters.TryGetValue(variableName, out var parameterType))
+        {
+            return parameterType;
+        }
+        else
+        {
+            // If it doesn't exist, we assume it's being declared here
+            context.LocalVariables[variableName] = attemptedAssignmentType;
+            return attemptedAssignmentType;
+        }
+    }
+
+    private bool CanResolveToVariable(FunctionContext context, Token variableName)
+    {
+        if (context.LocalVariables.TryGetValue(variableName, out var existingType))
+            return true;
+        else if (context.Parameters.TryGetValue(variableName, out var parameterType))
+            return true;
+        else return false;
+    }
+
+
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, ExpressionBase expression)
+    {
+        switch (expression)
+        {
+            case CallExpression callExpression:
+                Resolve(errors, module, context, callExpression);
+                break;
+            case IdentifierExpression identifierExpression:
+                Resolve(errors, module, context, identifierExpression);
+                break;
+            case MemberAccessExpression memberAccessExpression:
+                Resolve(errors, module, context, memberAccessExpression);
+                break;
+            case LiteralExpression literalExpression:
+                Resolve(errors, module, context, literalExpression);
+                break;
+            default:
+                errors.Add(expression, $"Unknown expression type '{expression.GetType()}'");
+                break;
+        }
+
+    }
+
+
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, CallExpression callExpression)
+    {
+        foreach (var argument in callExpression.Arguments) Resolve(errors, module, context, argument);
+        if (callExpression.Callee is IdentifierExpression identifierExpression)
+        {
+            var argumentTypes = callExpression.Arguments.Select(arg => arg.ConcreteType).ToList();
+            var functionKey = new FunctionKey(identifierExpression.Symbol, argumentTypes);
+            if (module.TryGetMethodOverload(functionKey, out var functionContext))
+            {
+                callExpression.TagAsType(functionContext.ReturnType);
+                callExpression.FunctionContext = functionContext;
+                return; // we can return early since the functionKey check guarantees the correct types
+            }
+        }
+        else if (callExpression.Callee is MemberAccessExpression memberAccessExpression 
+            && TryResolveToMethodGroup(errors, module, context, memberAccessExpression, out var methodGroup) 
+            && methodGroup != null)
+        {
+            var argumentTypes = callExpression.Arguments.Select(arg => arg.ConcreteType).ToList();
+            var functionKey = new FunctionKey(memberAccessExpression.MemberToAccess, argumentTypes);
+            if (!methodGroup.TryGetOverload(functionKey, out var functionContext))
+            {
+                errors.Add(callExpression.Callee, $"unable to find overload of function {functionKey}");
+                return;
+            }
+            callExpression.TagAsType(functionContext.ReturnType);
+            callExpression.FunctionContext = functionContext;
+            return;
+        }
+
+        Resolve(errors, module, context, callExpression.Callee);
+        if (callExpression.Callee.ConcreteType is not CallableType callableType)
+        {
+            errors.Add(callExpression.Callee, $"Cannot call non-callable type '{callExpression.Callee.ConcreteType}'");
+            return;
+        }
+
+        callExpression.TagAsType(callableType.ReturnType);
+
+        
+        if (callExpression.Arguments.Count != callableType.Parameters.Count)
+        {
+            errors.Add(callExpression.Callee, $"Function expected {callableType.Parameters.Count} arguments but got {callExpression.Arguments.Count}");
+            return;
+        }
+        for(int i = 0; i < callableType.Parameters.Count; i++)
+        {
+            var argumentType = callExpression.Arguments[i].ConcreteType;
+            var parameterType = callableType.Parameters[i].ParmaterType;
+            if (!parameterType.IsAssignableFrom(argumentType))
+            {
+                errors.Add(callExpression.Arguments[i], $"Cannot assign argument of type '{argumentType}' to parameter of type '{parameterType}'");
+            }
+        }
+    }
+
+    private bool TryResolveToMethodGroup(ModuleErrors errors, ModuleContext module, FunctionContext context, MemberAccessExpression memberAccessExpression, out MethodGroup? methodGroup)
+    {
+        methodGroup = null;
+
+        if (memberAccessExpression.Instance is IdentifierExpression identifierExpression)
+        {
+            if (CanResolveToVariable(context, identifierExpression.Symbol)) return false; // inner-scoped variable trumps outer-scoped imported module
+            if (module.TryGetImportedModule(identifierExpression.Symbol, out var importedModule) 
+                && importedModule.TryGetMethodGroup(memberAccessExpression.MemberToAccess, out methodGroup))
+            {
+                return true;
+            }
+
+        }
+        return false;
+    }
+
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, IdentifierExpression identifierExpression)
+    {
+        ConcreteType? variableType;
+        if (context.TryGetVariableType(identifierExpression.Symbol, out variableType))
+        {
+            identifierExpression.TagAsType(variableType);
+            
+            return;
+        }
+        if (context.Parameters.TryGetValue(identifierExpression.Symbol, out variableType))
+        {
+            identifierExpression.TagAsType(variableType);
+            return;
+        }
+
+        if (module.TryGetMethodOverload(identifierExpression.Symbol, out var functionContext))
+        {
+            // This is only possible when function reference is unambiguous (i.e., only one overload exists)
+            identifierExpression.TagAsType(functionContext.AsConcreteType());
+            identifierExpression.FunctionContext = functionContext;
+            return;
+        }
+
+        errors.Add(identifierExpression, $"Undefined variable '{identifierExpression.Symbol.Lexeme}'");
+
+    }
+
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, MemberAccessExpression memberAccessExpression)
+    {
+        Resolve(errors, module, context, memberAccessExpression.Instance);
+        var instanceType = memberAccessExpression.Instance.ConcreteType;
+        if (instanceType is not StructType structType)
+        {
+            errors.Add(memberAccessExpression.MemberToAccess, $"Cannot access member '{memberAccessExpression.MemberToAccess.Lexeme}' of non-struct type '{instanceType}'");
+            return;
+        }
+        var foundMember = structType.Members.Find(m => m.Name.Lexeme == memberAccessExpression.MemberToAccess.Lexeme);
+        if (foundMember == null)
+        {
+            errors.Add(memberAccessExpression.MemberToAccess, $"Struct type '{structType}' does not contain member '{memberAccessExpression.MemberToAccess.Lexeme}'");
+            return;
+        }
+        memberAccessExpression.TagAsType(foundMember.FieldType);
+    }
+
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, LiteralExpression literalExpression)
+    {
+        if (literalExpression.Value is int)
+            literalExpression.TagAsType(new ConcreteType(BuiltinType.Int));
+        else if (literalExpression.Value is float)
+            literalExpression.TagAsType(new ConcreteType(BuiltinType.Float));
+        else if (literalExpression.Value is string)
+            literalExpression.TagAsType(new ConcreteType(BuiltinType.String));
+        else
+            errors.Add(literalExpression, $"Unknown literal type for value '{literalExpression.Value}'");
+    }
+    
+}
+
+public class ModuleErrors
+{
+    public ModuleErrors()
+    {
+        Errors = new();
+    }
+    public List<ModuleError> Errors { get; set; }
+    public void Add(Token token, string error)
+    {
+        Errors.Add(new(token.Start, token.End, error));
+    }
+
+    public void Add(TypeSymbol typeSymbol, string error)
+    {
+        Errors.Add(new(typeSymbol.Start, typeSymbol.End, error));
+    }
+
+    public void Add(Location start, Location end, string error)
+    {
+        Errors.Add(new(start, end, error));
+    }
+
+    public void Add(StatementBase statement, string error)
+    {
+        Errors.Add(new(statement.Start, statement.End, error));
+    }
+
+    public void Add(ExpressionBase expression, string error)
+    {
+        Errors.Add(new(expression.Start, expression.End, error));
+    }
+
+}
+
+public class ModuleError
+{
+    public ModuleError(Location start, Location end, string message)
+    {
+        Start = start;
+        End = end;
+        Message = message;
+    }
+
+    public Location Start { get; set; }
+    public Location End { get; set; }
+    public string Message { get; set; }
+}
+
+public class ProgramContext
+{
+    public ProgramContext()
+    {
+        Modules = new(new TokenEqualityComparer());
+    }
+    public Dictionary<Token, ModuleContext> Modules { get; private set; }
+
+    public ModuleContext GetOrAddModule(Token moduleName)
+    {
+        if (TryGetModule(moduleName, out var module)) return module;
+        module = new ModuleContext(this, moduleName.Lexeme);
+        Modules[moduleName] = module;
+        return module;
+    }
+
+    public bool TryAddModule(ModuleErrors errors, Token moduleName, ModuleContext module)
+    {
+        if (Modules.ContainsKey(moduleName))
+        {
+            errors.Add(moduleName, $"module '{moduleName.Lexeme}' is already defined in program");
+            return false;
+        }
+        Modules[moduleName] = module;
+        return true;
+    }
+
+    public bool TryGetModule(Token moduleName, out ModuleContext module)
+    {
+        module = new(this, "");
+        if (Modules.TryGetValue(moduleName, out var potentialModule) && potentialModule != null)
+        {
+            module = potentialModule;
+            return true;
+        }
+        return false;
+    }
+}
+
+
+public class ModuleContext
+{
+    public ModuleContext(ProgramContext programContext, string moduleName)
+    {
+        ProgramContext = programContext;
+        ModuleName = moduleName;
+        Types = new(new TokenEqualityComparer());
+        Methods = new(new TokenEqualityComparer());
+        ImportedModules = new(new TokenEqualityComparer());
+    }
+    public ProgramContext ProgramContext { get; private set; }
+    public string ModuleName { get; set; }
+    public Dictionary<Token, StructType> Types { get; set; }
+    public Dictionary<Token, MethodGroup> Methods { get; set; }
+    public Dictionary<Token, ModuleContext> ImportedModules { get; set; }
+
+    public bool TryAddImportedModule(Token moduleName)
+    {
+        if (!ProgramContext.TryGetModule(moduleName, out var module)) return false;
+        if (ImportedModules.ContainsKey(moduleName)) return true; // Ignore second import of the same module
+        ImportedModules.Add(moduleName, module);
+        return true;
+    }
+
+    public bool TryGetImportedModule(Token moduleName, out ModuleContext module)
+    {
+        if (ImportedModules.TryGetValue(moduleName, out var moduleContext))
+        {
+            module = moduleContext;
+            return true;
+        }
+        module = new ModuleContext(ProgramContext, "");
+        return false;
+    }
+
+    public bool TryAddType(ModuleErrors errors, Token typeName, StructType type)
+    {
+        if (Types.ContainsKey(typeName))
+        {
+            errors.Add(typeName, $"type {type} has already been defined in module '{ModuleName}'");
+            return false;
+        }
+        Types[typeName] = type;
+        return true;
+    }
+
+    public bool TryGetType(Token typeName, out StructType? type)
+    {
+        return Types.TryGetValue(typeName, out type);
+    }
+
+    public bool TryGetMethodGroup(Token methodName, out MethodGroup? methodGroup)
+    {
+        return Methods.TryGetValue(methodName, out methodGroup);
+    }
+
+    public bool TryGetMethodOverload(Token methodName, out FunctionContext functionContext)
+    {
+        functionContext = new(this);
+        if (!Methods.TryGetValue(methodName, out var methodGroup)) return false;
+        if (methodGroup.Overloads.Count == 1)
+        {
+            functionContext = methodGroup.Overloads.First().Value;
+            return true;
+        }
+        return false;
+    }
+
+    public bool TryGetMethodOverload(FunctionKey functionKey, out FunctionContext functionContext)
+    {
+        functionContext = new(this);
+        if (!Methods.TryGetValue(functionKey.FunctionName, out var methodGroup)) return false;
+        return methodGroup.TryGetOverload(functionKey, out functionContext);
+    }
+
+    public MethodGroup GetOrAddMethodGroup(Token methodName)
+    {
+        if (Methods.TryGetValue(methodName, out var methodGroup)) return methodGroup;
+        methodGroup = new MethodGroup(this, methodName);
+        Methods.Add(methodName, methodGroup);
+        return methodGroup;
+    }
+
+}
+
+public class MethodGroup
+{
+    public MethodGroup(ModuleContext module, Token functionName)
+    {
+        Module = module;
+        FunctionName = functionName;
+        Overloads = new(new FunctionKeyEqualityComparer());
+    }
+    public ModuleContext Module { get; set; }
+    public Token FunctionName { get; set; }
+    public Dictionary<FunctionKey, FunctionContext> Overloads { get; private set; }
+
+    public bool TryAddOverload(ModuleErrors errors, FunctionKey key, FunctionContext function)
+    {
+        if (Overloads.ContainsKey(key))
+        {
+            errors.Add(key.FunctionName, $"function '{function}' is already defined in module '{Module.ModuleName}'");
+            return false;
+        }
+        Overloads.Add(key, function);
+        return true;
+    }
+
+    public bool TryGetOverload(FunctionKey functionKey, out FunctionContext functionOverload)
+    {
+        functionOverload = new(null!); // TODO: will never be null when returning true, trusting the programmer for now!
+        if (Overloads.TryGetValue(functionKey, out var potentialOverload) && potentialOverload != null)
+        {
+            functionOverload = potentialOverload;
+            return true;
+        }
+        else return false;
+    }
+
+}
+
+public class FunctionContext
+{
+    public FunctionContext(ModuleContext module)
+    {
+        Module = module;
+        FunctionName = new Token(BuiltinTokenTypes.Word, "anonymous", Location.Zero, Location.Zero);
+        LocalVariables = new Dictionary<Token, ConcreteType>(new TokenEqualityComparer());
+        Parameters = new Dictionary<Token, ConcreteType>(new TokenEqualityComparer());
+        ReturnType = new ConcreteType(BuiltinType.Void); // TODO Static void type?
+        BodyStatements = new();
+
+    }
+    public ModuleContext Module { get; private set; }
+    public Token FunctionName { get; set; }
+    public Dictionary<Token, ConcreteType> LocalVariables { get; set; }
+    public Dictionary<Token, ConcreteType> Parameters { get; set; }
+    public ConcreteType ReturnType { get; set; }
+    public bool EncounteredReturnStatement { get; set; } = false;
+    public bool IsErrorable { get; set; } = false;
+    public List<StatementBase> BodyStatements { get; set; }
+
+    public CallableType AsConcreteType() => new CallableType(FunctionName, ReturnType, Parameters.Select(kv => new FunctionParameter(kv.Key, kv.Value)).ToList(), IsErrorable);
+
+    public bool TryGetVariableType(Token variableName, out ConcreteType variableType)
+    {
+
+        if (LocalVariables.TryGetValue(variableName, out var potentialType))
+        {
+            variableType = potentialType;
+            return true;
+        }
+
+        if (Parameters.TryGetValue(variableName, out potentialType))
+        {
+            variableType = potentialType;
+            return true;
+        }
+        variableType = new ConcreteType(BuiltinType.Void);
+        return false;
+    }
+}
+
+public class FunctionKey
+{
+    public FunctionKey(Token functionName, List<ConcreteType> parameterTypes)
+    {
+        FunctionName = functionName;
+        ParameterTypes = parameterTypes;
+    }
+    public Token FunctionName { get; set; }
+    public List<ConcreteType> ParameterTypes { get; set; }
+
+}
+
+public class FunctionKeyEqualityComparer : IEqualityComparer<FunctionKey>
+{
+    public bool Equals(FunctionKey? x, FunctionKey? y)
+    {
+        if (x == null && y == null) return true;
+        if (x == null || y == null) return false;
+        if (x.FunctionName.Lexeme != y.FunctionName.Lexeme) return false;
+        if (x.ParameterTypes.Count != y.ParameterTypes.Count) return false;
+        for (int i = 0; i < x.ParameterTypes.Count; i++)
+        {
+            if (!x.ParameterTypes[i].IsEqualTo(y.ParameterTypes[i]))
+                return false;
+        }
+        return true;
+    }
+    public int GetHashCode(FunctionKey obj)
+    {
+        int hash = obj.FunctionName.Lexeme.GetHashCode();
+        return hash;
+    }
+}
+
+public class TokenEqualityComparer : IEqualityComparer<Token>
+{
+    public bool Equals(Token? x, Token? y)
+    {
+        if (x == null && y == null) return true;
+        if (x == null || y == null) return false;
+        return x.Lexeme == y.Lexeme && x.Type == y.Type;
+    }
+    public int GetHashCode(Token obj)
+    {
+        return HashCode.Combine(obj.Lexeme, obj.Type);
+    }
+}
