@@ -5,37 +5,69 @@ using Mineral.Language.Expressions;
 using Mineral.Language.LValues;
 using Mineral.Language.Statements;
 using Mineral.Language.StaticAnalysis;
-using System;
-using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
-using System.Text;
-using Tokenizer.Core.Models;
-using static System.Runtime.InteropServices.JavaScript.JSType;
+
 
 namespace Mineral.Language.Compiler;
 
 public class MineralCompiler
 {
 
-    private X86AssemblyContext _asm;
-    private X86Function? _functionContext = null;
-    private StackMemoryTracker _mem;
-    private X86Function _context => _functionContext ?? throw new InvalidOperationException("No function context is set.");
-    public void Compile(string outputPath, TypeResolverResult typeResolverResult)
+    private X86AssemblyContext _asm = new();
+
+    public (bool success, string error) CompileProgram(string outputPath, ProgramContext program)
     {
-        // Compilation logic goes here
-        _asm = new();
-        _mem = new(_asm);
+        try
+        {
+            // Compilation logic goes here
+            _asm = new();
+
+            foreach (var module in program.Modules.Values)
+            {
+                CompileModule(module);
+            }
+
+            _asm.SetEntryPoint("main");
+            X86AssemblyGenerator.OutputAsText(_asm, out var text);
+        } catch(Exception ex)
+        {
+            return (false, ex.Message);
+        }
+        return (true, "");
     }
 
     private void CompileModule(ModuleContext module)
     {
-        
-        foreach(var kv in module.Methods)
+        foreach (var kv in module.Methods)
+        {
+            foreach (var function in kv.Value.Overloads.Values)
+                RegisterFunction(function);
+        }
+        foreach (var kv in module.Methods)
         {
             foreach(var function in kv.Value.Overloads.Values)
                 CompileFunction(function);
+        }
+    }
+
+    private void RegisterFunction(FunctionContext functionContext)
+    {
+        if (functionContext.IsImported)
+        {
+            var fullLibraryPath = Path.GetFullPath(functionContext.ImportLibraryPath!.Lexeme);
+            var importLibrary = _asm.ImportLibraries.Find(x => x.LibraryPath == fullLibraryPath);
+            string libraryAlias;
+            if (importLibrary != null) libraryAlias = importLibrary.LibraryAlias;
+            else
+            {
+                libraryAlias = _asm.CreateUniqueLabel(); // Randomly generate library alias
+                importLibrary = new X86AssemblyContext.ImportLibrary(fullLibraryPath, libraryAlias); 
+                _asm.AddImportLibrary(importLibrary);
+            }
+            var functionSignature = functionContext.GetFunctionSignature();
+            var parameters = functionContext.Parameters.Select(kv => new X86FunctionLocalData(kv.Key.Lexeme, kv.Value.GetStackSize())).ToList();
+            var function = new X86AssemblyContext.ImportedFunction(CallingConvention.StdCall, libraryAlias, functionContext.FunctionName.Lexeme, functionSignature, parameters);
+            importLibrary.AddImportedFunction(function);
         }
     }
 
@@ -58,7 +90,6 @@ public class MineralCompiler
             _asm.Return();
         }
         _asm.ExitFunction();
-
     }
 
     private void Compile(StatementBase statement)
@@ -109,37 +140,46 @@ public class MineralCompiler
 
     private void Compile(AssignmentStatement assignmentStatement)
     {
-        CompileToRegister(assignmentStatement.Value, X86Register.eax); // Push value to assign onto the stack
-        RegisterOffset assignmentTarget;
-        if (assignmentStatement.AssignmentTarget is IdentifierLValue identifierLValue)
+        var errorTarget = assignmentStatement.ErrorTarget;
+        if (errorTarget == null && assignmentStatement.Value is CallExpression callExpression && callExpression.Callee.ConcreteType is CallableType callableType && callableType.ReturnType.IsVoidType() && callableType.IsErrorable)
         {
-            assignmentTarget = _asm.GetIdentifierOffset(identifierLValue.VariableName.Lexeme, out _);
-        }
-        else if (assignmentStatement.AssignmentTarget is InstanceMemberLValue instanceMemberLValue)
+            errorTarget = assignmentStatement.AssignmentTarget;
+            CompileForError(callExpression);
+        } else
         {
-            CompileToRegister(instanceMemberLValue.Instance, X86Register.ecx); // Since expressions by default only use eax and edx, we use ecx so we have no need to store the assignment value temporarily
-            if (instanceMemberLValue.Instance.ConcreteType is StructType instanceType && instanceType.TryGetMemberOffset(instanceMemberLValue.Member, out var offset))
+            CompileToRegister(assignmentStatement.Value, X86Register.eax); // Push value to assign onto the stack
+            RegisterOffset assignmentTarget;
+            if (assignmentStatement.AssignmentTarget is IdentifierLValue identifierLValue)
             {
-                assignmentTarget = Offset.Create(X86Register.ecx, offset);
-            } 
-            else throw new InvalidOperationException($"unable to find member '{instanceMemberLValue.Member.Lexeme}' in type '{instanceMemberLValue.Instance.ConcreteType}' or '{instanceMemberLValue.Instance.ConcreteType}' is not a struct type");
-                
-        }
-        else throw new NotSupportedException($"lvalue of type '{assignmentStatement.AssignmentTarget.GetType()}' is not supported");
+                assignmentTarget = _asm.GetIdentifierOffset(identifierLValue.VariableName.Lexeme, out _);
+            }
+            else if (assignmentStatement.AssignmentTarget is InstanceMemberLValue instanceMemberLValue)
+            {
+                CompileToRegister(instanceMemberLValue.Instance, X86Register.ecx); // Since expressions by default only use eax and edx, we use ecx so we have no need to store the assignment value temporarily
+                if (instanceMemberLValue.Instance.ConcreteType is StructType instanceType && instanceType.TryGetMemberOffset(instanceMemberLValue.Member, out var offset))
+                {
+                    assignmentTarget = Offset.Create(X86Register.ecx, offset);
+                }
+                else throw new InvalidOperationException($"unable to find member '{instanceMemberLValue.Member.Lexeme}' in type '{instanceMemberLValue.Instance.ConcreteType}' or '{instanceMemberLValue.Instance.ConcreteType}' is not a struct type");
 
-        CompileAsAssignmentValue(assignmentTarget, assignmentStatement.Value);
+            }
+            else throw new NotSupportedException($"lvalue of type '{assignmentStatement.AssignmentTarget.GetType()}' is not supported");
+
+            CompileAsAssignmentValue(assignmentTarget, assignmentStatement.Value);
+        }
+            
 
 
     
         // Errors returned in edx
-        if (assignmentStatement.ErrorTarget != null)
+        if (errorTarget != null)
         {
-            if (assignmentStatement.ErrorTarget is IdentifierLValue errIdentifierLValue)
+            if (errorTarget is IdentifierLValue errIdentifierLValue)
             {
                 var offset = _asm.GetIdentifierOffset(errIdentifierLValue.VariableName.Lexeme, out _);
                 _asm.Mov(offset, X86Register.edx);
             }
-            else if (assignmentStatement.ErrorTarget is InstanceMemberLValue instanceMemberLValue)
+            else if (errorTarget is InstanceMemberLValue instanceMemberLValue)
             {
                 CompileToRegister(instanceMemberLValue.Instance, X86Register.ecx); // Since expressions by default only use eax and edx, we use ecx so we have no need to store the assignment value temporarily
                 if (instanceMemberLValue.Instance.ConcreteType is StructType instanceType && instanceType.TryGetMemberOffset(instanceMemberLValue.Member, out var offset))
@@ -159,6 +199,28 @@ public class MineralCompiler
         // all expressions end up with their returned value in eax
         CompileToRegister(expression, X86Register.eax);
         
+    }
+
+    private void CompileForError(CallExpression callExpression)
+    {
+        if (!(callExpression.Callee.ConcreteType is CallableType callableType && callableType.IsErrorable)) throw new InvalidOperationException("can only optimize error call for errorable calls");
+        for (int i = callExpression.Arguments.Count - 1; i >= 0; i--)
+        {
+            var argument = callExpression.Arguments[i];
+            CompileAsArgument(argument);
+        }
+        if (callExpression.FunctionContext != null)
+        {
+            // it is a direct call
+            _asm.Call(callExpression.FunctionContext.GetFunctionSignature(), false);
+        }
+        else
+        {
+            // Indirect call
+            CompileToRegister(callExpression.Callee, X86Register.eax);
+            _asm.Call(X86Register.eax);
+        }
+
     }
 
 
@@ -195,16 +257,17 @@ public class MineralCompiler
         if (callExpression.FunctionContext != null)
         {
             // it is a direct call
-            _asm.Call(callExpression.FunctionContext.GetFunctionSignature(), false);
+            _asm.Call(callExpression.FunctionContext.GetFunctionSignature(), callExpression.FunctionContext.IsImported);
         }
         else
         {
             // Indirect call
             CompileToRegister(callExpression.Callee, X86Register.eax);
             _asm.Call(X86Register.eax);
-        }      
+        }
         if (register != X86Register.eax)
         {
+            if (callExpression.Callee.ConcreteType is CallableType callableType && callableType.ReturnType.IsVoidType()) return;
             _asm.Mov(register, X86Register.eax);
         }
     }
@@ -285,7 +348,7 @@ public class MineralCompiler
 
     private void CompileAsAssignmentValue(RegisterOffset assignmentTarget, CallExpression callExpression)
     {
-        Compile(callExpression);
+        CompileToRegister(callExpression, X86Register.eax);
         _asm.Mov(assignmentTarget, X86Register.eax);
     }
 

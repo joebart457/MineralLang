@@ -144,6 +144,8 @@ public class TypeResolver
         var context = new FunctionContext(module);
         context.ReturnType = ResolveDeclaredType(errors, module, functionDeclaration.ReturnType);
         context.IsErrorable = functionDeclaration.IsErrorable;
+        context.IsPublic = functionDeclaration.IsPublic;
+        context.ImportLibraryPath = functionDeclaration.ImportLibraryPath;
         foreach (var parameter in functionDeclaration.Parameters)
         {
             var parameterType = ResolveDeclaredType(errors, module,parameter.ParameterType);
@@ -168,7 +170,12 @@ public class TypeResolver
             errors.Add(functionDeclaration.FunctionName, $"Function '{functionKey}' is not registered");
             return;
         }
-        
+        if (functionContext.IsImported)
+        {
+            if (functionDeclaration.BodyStatements.Count != 0)
+                errors.Add(functionDeclaration.FunctionName, "imported function cannot declare a function body");
+            return;
+        }
         foreach (var statement in functionDeclaration.BodyStatements)
         {
             Resolve(errors, module, functionContext, statement);
@@ -197,7 +204,7 @@ public class TypeResolver
                 Resolve(errors, module, context, assignmentStatement);
                 break;
             default:
-                errors.Add(statement, $"Unknown statement type '{statement.GetType()}'"); // TODO statement start, end
+                errors.Add(statement, $"Unknown statement type '{statement.GetType()}'");
                 break;
         }
     }
@@ -237,31 +244,44 @@ public class TypeResolver
     {
         Resolve(errors, module, context, assignmentStatement.Value);
         var valueType = assignmentStatement.Value.ConcreteType;
-        if (assignmentStatement.AssignmentTarget is IdentifierLValue identifierExpression)
-        {
-            assignmentStatement.AssignmentTarget.TagAsType(ResolveOrCreateVariable(context, identifierExpression.VariableName, assignmentStatement.Value.ConcreteType));
-        }
-        else Resolve(errors, module, context, assignmentStatement.AssignmentTarget);
 
-        if (!assignmentStatement.AssignmentTarget.ConcreteType.IsAssignableFrom(valueType))
+        var errorTarget = assignmentStatement.ErrorTarget;
+        if (errorTarget == null && assignmentStatement.Value is CallExpression callExpression && callExpression.Callee.ConcreteType is CallableType callableType && callableType.IsErrorable && callableType.ReturnType.IsVoidType())
         {
-            errors.Add(assignmentStatement.AssignmentTarget, $"Cannot assign value of type '{valueType}' to lvalue of type '{assignmentStatement.AssignmentTarget.ConcreteType}");
+            // If value is an errorable void type, treat single assignment as error assignments
+            errorTarget = assignmentStatement.AssignmentTarget;
+        } 
+        else
+        {
+            
+            if (assignmentStatement.AssignmentTarget is IdentifierLValue identifierExpression)
+            {
+                assignmentStatement.AssignmentTarget.TagAsType(ResolveOrCreateVariable(context, identifierExpression.VariableName, valueType));
+            }
+            else Resolve(errors, module, context, assignmentStatement.AssignmentTarget);
+
+            if (!assignmentStatement.AssignmentTarget.ConcreteType.IsAssignableFrom(valueType))
+            {
+                errors.Add(assignmentStatement.AssignmentTarget, $"Cannot assign value of type '{valueType}' to lvalue of type '{assignmentStatement.AssignmentTarget.ConcreteType}");
+            }
         }
 
-        if (assignmentStatement.ErrorTarget != null)
+        
+
+        if (errorTarget != null)
         {
-            if (!(assignmentStatement.Value.ConcreteType is CallableType callableType && callableType.IsErrorable))
+            if (!(valueType is CallableType callableType1 && callableType1.IsErrorable))
             {
                 errors.Add(assignmentStatement.Value, $"expect errorable expression on right hand side of error assignment");
             }
-            if (assignmentStatement.ErrorTarget is IdentifierLValue errorIdentifierExpression)
+            if (errorTarget is IdentifierLValue errorIdentifierExpression)
             {
-                assignmentStatement.ErrorTarget.TagAsType(ResolveOrCreateVariable(context, errorIdentifierExpression.VariableName, NativeTypes.Error));
+                errorTarget.TagAsType(ResolveOrCreateVariable(context, errorIdentifierExpression.VariableName, NativeTypes.Error));
             }
-            else Resolve(errors, module, context, assignmentStatement.ErrorTarget);
-            if (!assignmentStatement.ErrorTarget.ConcreteType.IsErrorType())
+            else Resolve(errors, module, context, errorTarget);
+            if (!errorTarget.ConcreteType.IsErrorType())
             {
-                errors.Add(assignmentStatement.ErrorTarget, $"Error target must be of error type, but got '{assignmentStatement.ErrorTarget.ConcreteType}'");
+                errors.Add(errorTarget, $"Error target must be of error type, but got '{errorTarget.ConcreteType}'");
             }
         }
     }
@@ -338,7 +358,7 @@ public class TypeResolver
         {
             var argumentTypes = callExpression.Arguments.Select(arg => arg.ConcreteType).ToList();
             var functionKey = new FunctionKey(memberAccessExpression.MemberToAccess, argumentTypes);
-            if (!methodGroup.TryGetOverload(functionKey, out var functionContext))
+            if (!methodGroup.TryGetPublicOverload(functionKey, out var functionContext))
             {
                 errors.Add(callExpression.Callee, $"unable to find overload of function {functionKey}");
                 return;
@@ -657,6 +677,17 @@ public class MethodGroup
         else return false;
     }
 
+    public bool TryGetPublicOverload(FunctionKey functionKey, out FunctionContext functionOverload)
+    {
+        functionOverload = new(null!); // TODO: will never be null when returning true, trusting the programmer for now!
+        if (Overloads.TryGetValue(functionKey, out var potentialOverload) && potentialOverload != null && potentialOverload.IsPublic)
+        {
+            functionOverload = potentialOverload;
+            return true;
+        }
+        else return false;
+    }
+
 }
 
 public class FunctionContext
@@ -678,6 +709,9 @@ public class FunctionContext
     public ConcreteType ReturnType { get; set; }
     public bool EncounteredReturnStatement { get; set; } = false;
     public bool IsErrorable { get; set; } = false;
+    public bool IsPublic { get; set; } = false;
+    public bool IsImported => ImportLibraryPath != null;
+    public Token? ImportLibraryPath { get; set; }
     public List<StatementBase> BodyStatements { get; set; }
 
     public CallableType AsConcreteType() => new CallableType(FunctionName, ReturnType, Parameters.Select(kv => new FunctionParameter(kv.Key, kv.Value)).ToList(), IsErrorable);

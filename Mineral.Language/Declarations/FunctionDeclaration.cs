@@ -6,13 +6,15 @@ namespace Mineral.Language.Declarations;
 
 public class FunctionDeclaration
 {
-    public FunctionDeclaration(Token functionName, TypeSymbol returnType, List<FunctionDeclarationParameter> parameters, List<StatementBase> bodyStatements, bool isErrorable)
+    public FunctionDeclaration(Token functionName, TypeSymbol returnType, List<FunctionDeclarationParameter> parameters, List<StatementBase> bodyStatements, bool isErrorable, bool isPublic, Token? importLibraryPath)
     {
         FunctionName = functionName;
         ReturnType = returnType;
         Parameters = parameters;
         BodyStatements = bodyStatements;
         IsErrorable = isErrorable;
+        IsPublic = isPublic;
+        ImportLibraryPath = importLibraryPath;
     }
 
     public Token FunctionName { get; set; }
@@ -20,6 +22,8 @@ public class FunctionDeclaration
     public List<FunctionDeclarationParameter> Parameters { get; set; }
     public List<StatementBase> BodyStatements { get; set; }
     public bool IsErrorable { get; set; }
+    public bool IsPublic { get; set; }
+    public Token? ImportLibraryPath { get; set;  }
 }
 
 public class FunctionDeclarationParameter
