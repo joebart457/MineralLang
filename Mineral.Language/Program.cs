@@ -1,2 +1,5 @@
-﻿// See https://aka.ms/new-console-template for more information
-Console.WriteLine("Hello, World!");
+﻿
+
+using Mineral.Language.Services;
+
+CompilerService.CompileProgram("C:\\Users\\Jimmy\\Desktop\\Repositories\\MineralLang\\Mineral.Language\\Tests\\SampleProject");

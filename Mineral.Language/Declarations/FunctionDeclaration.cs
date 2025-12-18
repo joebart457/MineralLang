@@ -4,7 +4,7 @@ using Tokenizer.Core.Models;
 
 namespace Mineral.Language.Declarations;
 
-public class FunctionDeclaration
+public class FunctionDeclaration: DeclarationBase
 {
     public FunctionDeclaration(Token functionName, TypeSymbol returnType, List<FunctionDeclarationParameter> parameters, List<StatementBase> bodyStatements, bool isErrorable, bool isPublic, Token? importLibraryPath)
     {

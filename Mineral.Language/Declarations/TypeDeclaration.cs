@@ -3,7 +3,7 @@ using Tokenizer.Core.Models;
 
 namespace Mineral.Language.Declarations;
 
-public class TypeDeclaration
+public class TypeDeclaration : DeclarationBase
 {
     public TypeDeclaration(Token typeName, List<TypeDeclarationField> members)
     {

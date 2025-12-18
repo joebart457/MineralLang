@@ -134,7 +134,8 @@ public class MineralCompiler
         _asm.Test(X86Register.edx, X86Register.edx);
         var endIfLabel = _asm.CreateUniqueLabel();
         _asm.Jnz(endIfLabel);
-        Compile(conditionalStatement.ThenBlock);
+        foreach(var statment in conditionalStatement.ThenBlock)
+            Compile(statment);
         _asm.Label(endIfLabel);
     }
 
@@ -152,6 +153,7 @@ public class MineralCompiler
             if (assignmentStatement.AssignmentTarget is IdentifierLValue identifierLValue)
             {
                 assignmentTarget = _asm.GetIdentifierOffset(identifierLValue.VariableName.Lexeme, out _);
+                CompileAsAssignmentValue(assignmentTarget, assignmentStatement.Value);
             }
             else if (assignmentStatement.AssignmentTarget is InstanceMemberLValue instanceMemberLValue)
             {
@@ -161,11 +163,13 @@ public class MineralCompiler
                     assignmentTarget = Offset.Create(X86Register.ecx, offset);
                 }
                 else throw new InvalidOperationException($"unable to find member '{instanceMemberLValue.Member.Lexeme}' in type '{instanceMemberLValue.Instance.ConcreteType}' or '{instanceMemberLValue.Instance.ConcreteType}' is not a struct type");
-
+                CompileAsAssignmentValue(assignmentTarget, assignmentStatement.Value);
             }
-            else throw new NotSupportedException($"lvalue of type '{assignmentStatement.AssignmentTarget.GetType()}' is not supported");
-
-            CompileAsAssignmentValue(assignmentTarget, assignmentStatement.Value);
+            else if (assignmentStatement.AssignmentTarget is DiscardLValue)
+            {
+                // Pass
+            }
+            else throw new NotSupportedException($"lvalue of type '{assignmentStatement.AssignmentTarget.GetType()}' is not supported");        
         }
             
 
@@ -188,6 +192,10 @@ public class MineralCompiler
                 }
                 else throw new InvalidOperationException($"unable to find member '{instanceMemberLValue.Member.Lexeme}' in type '{instanceMemberLValue.Instance.ConcreteType}' or '{instanceMemberLValue.Instance.ConcreteType}' is not a struct type");
 
+            }
+            else if (errorTarget is DiscardLValue)
+            {
+                // Pass
             }
             else throw new NotSupportedException($"lvalue of type '{assignmentStatement.AssignmentTarget.GetType()}' is not supported");
         }

@@ -2,12 +2,13 @@
 
 namespace Mineral.Language.Declarations;
 
-public class ImportDeclaration
+public class ImportDeclaration : DeclarationBase
 {
-    public ImportDeclaration(List<Token> imports)
+    public ImportDeclaration(Token token, List<Token> imports)
     {
+        Token = token;
         Imports = imports;
     }
+    public Token Token { get; set; } // Token used only for error reporting
     public List<Token> Imports { get; set; }
-
 }

@@ -1,0 +1,12 @@
+module io
+
+
+func `kernel32.dll` GetStdHandle(int hndl): ref[void];
+
+func `kernel32.dll` WriteConsoleA(ref[void] hOut, string msg, int lenMsg, int charsWritten, int res);
+
+pub func log(string msg) void {
+	hOut = GetStdHandle(-11);
+	_ = WriteConsoleA(hOut, "test", 4, 0, 0);
+}
+

@@ -1,8 +1,8 @@
 ﻿using Mineral.Language.Declarations;
 using Mineral.Language.Expressions;
 using Mineral.Language.LValues;
+using Mineral.Language.Parser;
 using Mineral.Language.Statements;
-using System.Reflection;
 using Tokenizer.Core.Constants;
 using Tokenizer.Core.Models;
 
@@ -12,11 +12,11 @@ public class TypeResolver
 {
     private static readonly Dictionary<Token, ConcreteType> BuiltinTypes = new Dictionary<Token, ConcreteType>()
     {
-        { new(BuiltinTokenTypes.Word, "int", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.Int) },
-        { new(BuiltinTokenTypes.Word, "float", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.Float) },
-        { new(BuiltinTokenTypes.Word, "string", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.String) },
-        { new(BuiltinTokenTypes.Word, "void", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.Void) },
-        { new(BuiltinTokenTypes.Word, "func", Location.Zero, Location.Zero ), new CallableType(null, new ConcreteType(BuiltinType.Void), new(), false)},
+        { new(TokenTypes.Word, "int", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.Int) },
+        { new(TokenTypes.Word, "float", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.Float) },
+        { new(TokenTypes.Word, "string", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.String) },
+        { new(TokenTypes.Word, "void", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.Void) },
+
     };
 
     private FunctionKey CreateFunctionKey(ModuleErrors errors, ModuleContext module, FunctionDeclaration functionDeclaration)
@@ -58,7 +58,7 @@ public class TypeResolver
             return type;
         }
 
-        if (typeSymbol.ModuleName == null && BuiltinTypes.TryGetValue(typeSymbol.TypeName, out var potentialFuncType) && potentialFuncType is CallableType)
+        if (typeSymbol.ModuleName == null && typeSymbol.TypeName.Lexeme == "func")
         {
             var parameterTypes = new List<ConcreteType>();
             ConcreteType returnType = NativeTypes.Void;
@@ -73,12 +73,22 @@ public class TypeResolver
             var parameters = parameterTypes.Select(x => new FunctionParameter(new Token(BuiltinTokenTypes.Word, "_", Location.Zero, Location.Zero), x)).ToList();
             return new CallableType(null, returnType, parameters, typeSymbol.IsErrorable);
         }
+        else if (typeSymbol.ModuleName == null && typeSymbol.TypeName.Lexeme == "ref")
+        {
+            if (typeSymbol.GenericTypeArguments.Count != 1)
+            {
+                errors.Add(typeSymbol, "expect exactly one type argument for reference type");
+                return NativeTypes.Void;
+            }
+            var genericTypeArgument = ResolveDeclaredType(errors, module, typeSymbol.GenericTypeArguments[0]);
+            return new ReferenceType(genericTypeArgument);
+        }
 
-        errors.Add(typeSymbol, $"Unable to resolve typename '{typeSymbol}'");
+            errors.Add(typeSymbol, $"Unable to resolve typename '{typeSymbol}'");
         return NativeTypes.Void;
     }
 
-    public ModuleContext ProcessModule(ProgramContext programContext, Token moduleName, ImportDeclaration importDeclaration, List<TypeDeclaration> typeDeclarations, List<FunctionDeclaration> functionDeclarations)
+    public (ModuleContext, ModuleErrors) ProcessModule(ProgramContext programContext, Token moduleName, ImportDeclaration importDeclaration, List<TypeDeclaration> typeDeclarations, List<FunctionDeclaration> functionDeclarations)
     {
 
         var module = programContext.GetOrAddModule(moduleName);
@@ -135,7 +145,7 @@ public class TypeResolver
         }
 
        
-        return module;
+        return (module, errors);
 
     }
 
@@ -232,7 +242,7 @@ public class TypeResolver
     public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, ConditionalStatement conditionalStatement)
     {
         Resolve(errors, module, context, conditionalStatement.ConditionalTarget);
-        Resolve(errors, module, context, conditionalStatement.ThenBlock);
+        foreach(var statement in conditionalStatement.ThenBlock) Resolve(errors, module, context, statement); // TODO Encountered return?
         var conditionType = conditionalStatement.ConditionalTarget.ConcreteType;
         if (!conditionType.IsConditionalTestable())
         {
@@ -258,6 +268,10 @@ public class TypeResolver
             {
                 assignmentStatement.AssignmentTarget.TagAsType(ResolveOrCreateVariable(context, identifierExpression.VariableName, valueType));
             }
+            else if (assignmentStatement.AssignmentTarget is DiscardLValue)
+            {
+                // Pass
+            }
             else Resolve(errors, module, context, assignmentStatement.AssignmentTarget);
 
             if (!assignmentStatement.AssignmentTarget.ConcreteType.IsAssignableFrom(valueType))
@@ -277,6 +291,10 @@ public class TypeResolver
             if (errorTarget is IdentifierLValue errorIdentifierExpression)
             {
                 errorTarget.TagAsType(ResolveOrCreateVariable(context, errorIdentifierExpression.VariableName, NativeTypes.Error));
+            }
+            else if (errorTarget is DiscardLValue)
+            {
+                // Pass
             }
             else Resolve(errors, module, context, errorTarget);
             if (!errorTarget.ConcreteType.IsErrorType())
@@ -516,6 +534,11 @@ public class ModuleError
     public Location Start { get; set; }
     public Location End { get; set; }
     public string Message { get; set; }
+
+    public override string ToString()
+    {
+        return $"{Start}, {End}: {Message}";
+    }
 }
 
 public class ProgramContext

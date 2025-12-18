@@ -1,5 +1,4 @@
 ﻿
-
 using Mineral.Language.Expressions;
 
 namespace Mineral.Language.LValues;

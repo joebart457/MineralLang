@@ -5,7 +5,7 @@ namespace Mineral.Language.Compiler;
 
 public static class CompilerTypeExtensions
 {
-    public static int GetStackSize(this ConcreteType concreteType) => 4;
+    public static int GetStackSize(this ConcreteType concreteType) => concreteType is StructType s? throw new InvalidOperationException("cannot determine stack size of struct") : 4;
 
     public static bool TryGetMemberOffset(this StructType structType, Token memberName, out int offset)
     {

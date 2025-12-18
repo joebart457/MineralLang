@@ -1,0 +1,11 @@
+module main
+
+
+import {
+	"io"
+}
+
+pub func main() {
+	_ = io.log("test");
+
+}
