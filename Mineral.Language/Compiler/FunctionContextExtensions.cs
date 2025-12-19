@@ -1,4 +1,5 @@
 ﻿using Mineral.Language.StaticAnalysis;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace Mineral.Language.Compiler;
@@ -19,6 +20,12 @@ public static class FunctionContextExtensions
         }
         sb.Append(functionContext.ReturnType);
         return sb.ToString();
+    }
+
+    public static string GetDecoratedFunctionLabel(this FunctionContext functionContext)
+    {
+        // Assume StdCall calling convention
+        return $"_{functionContext.GetFunctionSignature()}@{functionContext.Parameters.Count * 4}"; // assume 4 byte stack size for all parameters
     }
 
 }

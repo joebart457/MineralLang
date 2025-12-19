@@ -10,6 +10,11 @@ public class ConcreteType
     {
         BuiltinType = builtinType;
     }
+
+    public override string ToString()
+    {
+        return BuiltinType.ToString().ToLower();
+    }
 }
 
 public class ReferenceType: ConcreteType
@@ -19,6 +24,11 @@ public class ReferenceType: ConcreteType
     public ReferenceType(ConcreteType referencedType): base(BuiltinType.Reference)
     {
         ReferencedType = referencedType;
+    }
+
+    public override string ToString()
+    {
+        return $"ref[{ReferencedType}]";
     }
 }
 
@@ -37,6 +47,11 @@ public class StructType: ConcreteType
     {
         TypeName = typeName;
         Members = new();
+    }
+
+    public override string ToString()
+    {
+        return TypeName.Lexeme;
     }
 }
 
@@ -66,6 +81,13 @@ public class CallableType : ConcreteType
     public ConcreteType ReturnType { get; set; }
     public List<FunctionParameter> Parameters { get; set; }
     public bool IsErrorable { get; set; }
+
+    public override string ToString()
+    {
+        var types = Parameters.Select(x => x.ParameterType).ToList();
+        types.Add(ReturnType);
+        return $"func[{string.Join(",", types.Select(x => x.ToString()))}]";
+    }
 }
 
 public class FunctionParameter
@@ -73,9 +95,17 @@ public class FunctionParameter
     public FunctionParameter(Token parameterName, ConcreteType parmaterType)
     {
         ParameterName = parameterName;
-        ParmaterType = parmaterType;
+        ParameterType = parmaterType;
     }
 
     public Token ParameterName { get; set; }
-    public ConcreteType ParmaterType { get; set; }
+    public ConcreteType ParameterType { get; set; }
+}
+
+
+public class NullPointerType : ConcreteType
+{
+    public NullPointerType() : base(BuiltinType.Void)
+    {
+    }
 }

@@ -1,12 +1,13 @@
 module io
 
+func `kernel32.dll` AllocConsole() void;
+func `kernel32.dll` GetStdHandle(int hndl) ref[void];
 
-func `kernel32.dll` GetStdHandle(int hndl): ref[void];
-
-func `kernel32.dll` WriteConsoleA(ref[void] hOut, string msg, int lenMsg, int charsWritten, int res);
+func `kernel32.dll` WriteConsoleA(ref[void] hOut, string msg, int lenMsg, int charsWritten, int res) int;
 
 pub func log(string msg) void {
+	_ = AllocConsole();
 	hOut = GetStdHandle(-11);
-	_ = WriteConsoleA(hOut, "test", 4, 0, 0);
+	_ = WriteConsoleA(hOut, "Hello, world!", 10, 0, 0);
 }
 

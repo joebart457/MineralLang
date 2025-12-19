@@ -10,7 +10,7 @@ namespace Mineral.Language.StaticAnalysis;
 
 public class TypeResolver
 {
-    private static readonly Dictionary<Token, ConcreteType> BuiltinTypes = new Dictionary<Token, ConcreteType>()
+    private static readonly Dictionary<Token, ConcreteType> BuiltinTypes = new Dictionary<Token, ConcreteType>(new TokenEqualityComparer())
     {
         { new(TokenTypes.Word, "int", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.Int) },
         { new(TokenTypes.Word, "float", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.Float) },
@@ -83,32 +83,151 @@ public class TypeResolver
             var genericTypeArgument = ResolveDeclaredType(errors, module, typeSymbol.GenericTypeArguments[0]);
             return new ReferenceType(genericTypeArgument);
         }
-
-            errors.Add(typeSymbol, $"Unable to resolve typename '{typeSymbol}'");
+        errors.Add(typeSymbol, $"Unable to resolve typename '{typeSymbol}'");
         return NativeTypes.Void;
     }
 
-    public (ModuleContext, ModuleErrors) ProcessModule(ProgramContext programContext, Token moduleName, ImportDeclaration importDeclaration, List<TypeDeclaration> typeDeclarations, List<FunctionDeclaration> functionDeclarations)
+    public List<ModuleContext> ResolveWorkspace(ProgramContext programContext, List<FileParseResult> parsedFiles)
+    {
+        var modules = new List<ModuleContext>();
+        foreach (var partialModule in parsedFiles)
+        {
+            var module = CreateModuleAndRegisterTypes(programContext, partialModule.ModuleName!, partialModule.DeclaredTypes);
+            modules.Add(module);
+        }
+
+        foreach (var partialModule in parsedFiles)
+        {
+            ResolveModuleImportsAndTypes(programContext, partialModule.ModuleName!, partialModule.Imports, partialModule.DeclaredTypes);
+        }
+
+        foreach (var partialModule in parsedFiles)
+        {
+            ForwardDeclareModuleFunctions(programContext, partialModule.ModuleName!, partialModule.DeclaredFunctions);
+        }
+
+        foreach (var partialModule in parsedFiles)
+        {
+            ResolveModuleFunctions(programContext, partialModule.ModuleName!, partialModule.DeclaredFunctions);
+        }
+        return modules;
+    }
+
+    public ModuleContext CreateModuleAndRegisterTypes(ProgramContext programContext, Token moduleName, List<TypeDeclaration> typeDeclarations)
+    {
+
+        var module = programContext.GetOrAddModule(moduleName);
+        var errors = module.GetOrCreateModuleErrors();
+
+
+        // First pass, register all type names for forward references
+        foreach (var typeDeclaration in typeDeclarations)
+        {
+            var structType = new StructType(typeDeclaration.TypeName);
+            module.TryAddType(errors, typeDeclaration.TypeName, structType);
+        }
+
+        return module;
+
+    }
+
+    public ModuleContext ResolveModuleImportsAndTypes(ProgramContext programContext, Token moduleName, ImportDeclaration? importDeclaration, List<TypeDeclaration> typeDeclarations)
+    {
+        var module = programContext.GetOrAddModule(moduleName);
+        var errors = module.GetOrCreateModuleErrors();
+
+        // First process imported modules
+        if (importDeclaration != null)
+        {
+            foreach (var import in importDeclaration.Imports)
+            {
+                if (importDeclaration.Imports.Count(x => x.Lexeme == import.Lexeme) > 1)
+                {
+                    errors.Add(import, $"duplicate import of '{import.Lexeme}' will be ignored");
+                    continue;
+                }
+                if (!module.TryAddImportedModule(import))
+                {
+                    errors.Add(import, $"module {import.Lexeme} is not found in workspace");
+                }
+
+            }
+        }
+
+
+        // Resolve member types
+        foreach (var typeDeclaration in typeDeclarations)
+        {
+            if (!module.TryGetType(typeDeclaration.TypeName, out var declaredStructType) || declaredStructType == null)
+            {
+                errors.Add(typeDeclaration.TypeName, $"Type '{typeDeclaration.TypeName.Lexeme}' is not defined");
+                continue;
+            }
+            foreach (var member in typeDeclaration.Members)
+            {
+                var memberType = ResolveDeclaredType(errors, module, member.FieldType);
+                declaredStructType.Members.Add(new StructTypeField(member.FieldName, memberType));
+            }
+        }
+
+
+        return module;
+    }
+
+    public ModuleContext ForwardDeclareModuleFunctions(ProgramContext programContext, Token moduleName, List<FunctionDeclaration> functionDeclarations)
+    {
+        var module = programContext.GetOrAddModule(moduleName);
+        var errors = module.GetOrCreateModuleErrors();
+
+        // Register all function names for forward references
+        foreach (var functionDeclaration in functionDeclarations)
+        {
+            RegisterFunction(errors, module, functionDeclaration);
+        }
+
+        return module;
+
+    }
+
+    public ModuleContext ResolveModuleFunctions(ProgramContext programContext, Token moduleName, List<FunctionDeclaration> functionDeclarations)
+    {
+        var module = programContext.GetOrAddModule(moduleName);
+        var errors = module.GetOrCreateModuleErrors();
+
+        // Second pass, resolve function bodies
+        foreach (var functionDeclaration in functionDeclarations)
+        {
+            ResolveFunction(errors, module, functionDeclaration);
+        }
+
+        return module;
+
+    }
+
+    public (ModuleContext, ModuleErrors) ProcessModule(ProgramContext programContext, Token moduleName, ImportDeclaration? importDeclaration, List<TypeDeclaration> typeDeclarations, List<FunctionDeclaration> functionDeclarations)
     {
 
         var module = programContext.GetOrAddModule(moduleName);
         var errors = new ModuleErrors();
 
         // First process imported modules
-        foreach(var import in importDeclaration.Imports)
+        if (importDeclaration != null)
         {
-            if (importDeclaration.Imports.Count(x => x.Lexeme == import.Lexeme) > 1)
+            foreach (var import in importDeclaration.Imports)
             {
-                errors.Add(import, $"duplicate import of '{import.Lexeme}' will be ignored");
-                continue;
-            }
-            if (!module.TryAddImportedModule(import))
-            {
-                errors.Add(import, $"module {import.Lexeme} is not found in workspace");
-            }
+                if (importDeclaration.Imports.Count(x => x.Lexeme == import.Lexeme) > 1)
+                {
+                    errors.Add(import, $"duplicate import of '{import.Lexeme}' will be ignored");
+                    continue;
+                }
+                if (!module.TryAddImportedModule(import))
+                {
+                    errors.Add(import, $"module {import.Lexeme} is not found in workspace");
+                }
 
+            }
         }
-
+        
 
         // First pass, register all type names for forward references
         foreach (var typeDeclaration in typeDeclarations)
@@ -152,6 +271,7 @@ public class TypeResolver
     public void RegisterFunction(ModuleErrors errors, ModuleContext module, FunctionDeclaration functionDeclaration)
     {
         var context = new FunctionContext(module);
+        context.FunctionName = functionDeclaration.FunctionName;
         context.ReturnType = ResolveDeclaredType(errors, module, functionDeclaration.ReturnType);
         context.IsErrorable = functionDeclaration.IsErrorable;
         context.IsPublic = functionDeclaration.IsPublic;
@@ -191,7 +311,7 @@ public class TypeResolver
             Resolve(errors, module, functionContext, statement);
             functionContext.BodyStatements.Add(statement);
         }
-        if (!functionContext.EncounteredReturnStatement && !functionContext.ReturnType.IsAssignableFrom(new ConcreteType(BuiltinType.Void))) // TOdo STATIC VOID?
+        if (!functionContext.EncounteredReturnStatement && !functionContext.ReturnType.IsEqualTo(NativeTypes.Void)) 
         {
             errors.Add(functionDeclaration.FunctionName, $"Function '{functionDeclaration.FunctionName.Lexeme}' is missing a return statement");
         }
@@ -404,7 +524,7 @@ public class TypeResolver
         for(int i = 0; i < callableType.Parameters.Count; i++)
         {
             var argumentType = callExpression.Arguments[i].ConcreteType;
-            var parameterType = callableType.Parameters[i].ParmaterType;
+            var parameterType = callableType.Parameters[i].ParameterType;
             if (!parameterType.IsAssignableFrom(argumentType))
             {
                 errors.Add(callExpression.Arguments[i], $"Cannot assign argument of type '{argumentType}' to parameter of type '{parameterType}'");
@@ -482,6 +602,8 @@ public class TypeResolver
             literalExpression.TagAsType(new ConcreteType(BuiltinType.Float));
         else if (literalExpression.Value is string)
             literalExpression.TagAsType(new ConcreteType(BuiltinType.String));
+        else if (literalExpression.Value is null)
+            literalExpression.TagAsType(new NullPointerType());
         else
             errors.Add(literalExpression, $"Unknown literal type for value '{literalExpression.Value}'");
     }
@@ -596,6 +718,8 @@ public class ModuleContext
     public Dictionary<Token, StructType> Types { get; set; }
     public Dictionary<Token, MethodGroup> Methods { get; set; }
     public Dictionary<Token, ModuleContext> ImportedModules { get; set; }
+    private ModuleErrors? _moduleErrors;
+    public ModuleErrors GetOrCreateModuleErrors() => _moduleErrors ?? new();
 
     public bool TryAddImportedModule(Token moduleName)
     {
@@ -798,10 +922,10 @@ public class TokenEqualityComparer : IEqualityComparer<Token>
     {
         if (x == null && y == null) return true;
         if (x == null || y == null) return false;
-        return x.Lexeme == y.Lexeme && x.Type == y.Type;
+        return x.Lexeme == y.Lexeme;
     }
     public int GetHashCode(Token obj)
     {
-        return HashCode.Combine(obj.Lexeme, obj.Type);
+        return HashCode.Combine(obj.Lexeme);
     }
 }

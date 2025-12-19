@@ -22,8 +22,7 @@ public static class TokenTypes
     public const string Discard = "Discard";
 
     // Native types
-    public const string ReferenceType = "Reference";
-    public const string FunctionType = "FunctionType";
+    public const string ReferenceType = "ReferenceType";
 
     // Keywords
     public const string Module = "Module";
@@ -70,7 +69,6 @@ public static class TokenizerFactory
             new(TokenTypes.Discard, "_"),
 
             new(TokenTypes.ReferenceType, "ref"),
-            new(TokenTypes.FunctionType, "func"),
 
             new(TokenTypes.Module, "module"),
             new(TokenTypes.Import, "import"),
@@ -84,7 +82,7 @@ public static class TokenizerFactory
             new(TokenTypes.String, "\"", enclosingLeft: "\"", enclosingRight: "\""),
             new(TokenTypes.ImportPath, "`", enclosingLeft: "`", enclosingRight: "`"),
         };
-
+        settings.AllowNegatives = true;
         return new(rules, settings);
     }
 }

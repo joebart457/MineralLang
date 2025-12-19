@@ -5,7 +5,7 @@ import {
 	"io"
 }
 
-pub func main() {
+pub func main() void {
 	_ = io.log("test");
 
 }

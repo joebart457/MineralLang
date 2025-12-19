@@ -17,8 +17,8 @@ internal static class TypeExtensions
                 return false;
             for (int i = 0; i < callableType.Parameters.Count; i++)
             {
-                var toParamType = callableType.Parameters[i].ParmaterType;
-                var fromParamType = fromCallableType.Parameters[i].ParmaterType;
+                var toParamType = callableType.Parameters[i].ParameterType;
+                var fromParamType = fromCallableType.Parameters[i].ParameterType;
                 if (!toParamType.IsEqualTo(fromParamType))
                     return false;
                 if (callableType.Parameters[i].ParameterName.Lexeme != fromCallableType.Parameters[i].ParameterName.Lexeme)
@@ -29,6 +29,7 @@ internal static class TypeExtensions
 
         if (to is ReferenceType toRefType)
         {
+            if (from is NullPointerType) return true; // null is always assignable to a reference
             if (from is not ReferenceType fromRefType)
                 return false;
             return toRefType.ReferencedType.IsEqualTo(fromRefType.ReferencedType);
@@ -43,6 +44,7 @@ internal static class TypeExtensions
 
     public static bool IsEqualTo(this ConcreteType to, ConcreteType from)
     {
+        if (to is NullPointerType || from is NullPointerType) return false; // null type is never equal except in special cases
         if (to is StructType structType)
         {
             if (from is not StructType fromStructType)
@@ -70,8 +72,8 @@ internal static class TypeExtensions
                 return false;
             for (int i = 0; i < callableType.Parameters.Count; i++)
             {
-                var toParamType = callableType.Parameters[i].ParmaterType;
-                var fromParamType = fromCallableType.Parameters[i].ParmaterType;
+                var toParamType = callableType.Parameters[i].ParameterType;
+                var fromParamType = fromCallableType.Parameters[i].ParameterType;
                 if (!toParamType.IsEqualTo(fromParamType))
                     return false;
                 if (callableType.Parameters[i].ParameterName.Lexeme != fromCallableType.Parameters[i].ParameterName.Lexeme)

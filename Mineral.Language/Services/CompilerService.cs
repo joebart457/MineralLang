@@ -22,24 +22,27 @@ public static class CompilerService
         var programContext = new ProgramContext();
         try
         {
-            var results = parser.ParseWorkspace(directory);
-            var parsingErrors = results.SelectMany(x => x.Errors);
+            var parsedFiles = parser.ParseWorkspace(directory);
+            var parsingErrors = parsedFiles.SelectMany(x => x.Errors);
             if (parsingErrors.Any())
             {
                 foreach (var error in parsingErrors) Console.WriteLine(error);
                 return -1;
             }
-            foreach(var fileParseResult in results)
+            var modules = typeResolver.ResolveWorkspace(programContext, parsedFiles);
+            var typeErrors = modules.SelectMany(x => x.GetOrCreateModuleErrors().Errors);
+            if (typeErrors.Any())
             {
-                var (module, errors) = typeResolver.ProcessModule(programContext, fileParseResult.ModuleName!, fileParseResult.Imports!, fileParseResult.DeclaredTypes, fileParseResult.DeclaredFunctions);
-                if (errors.Errors.Count != 0)
-                {
-                    foreach (var error in errors.Errors) Console.WriteLine(error);
-                    return -2;
-                }
+                foreach (var error in typeErrors) Console.WriteLine(error);
+                return -2;
             }
 
-            var (success, compilationError) = compiler.CompileProgram("out.txt", programContext);
+            var (success, compilationError) = compiler.CompileProgram("out.asm", programContext);
+            if (!success)
+            {
+                Console.WriteLine(compilationError);
+                return -3;
+            }
             
         } catch (Exception ex)
         {

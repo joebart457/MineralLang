@@ -1,6 +1,7 @@
 ﻿using Assembler.Core;
 using Assembler.Core.Constants;
 using Assembler.Core.Models;
+using Microsoft.Win32;
 using Mineral.Language.Expressions;
 using Mineral.Language.LValues;
 using Mineral.Language.Statements;
@@ -27,8 +28,13 @@ public class MineralCompiler
                 CompileModule(module);
             }
 
-            _asm.SetEntryPoint("main");
-            X86AssemblyGenerator.OutputAsText(_asm, out var text);
+            _asm.SetEntryPoint("main.main@void");
+            _asm.SetOutputTarget(OutputTarget.Exe);
+            var error = _asm.OutputToPeFile(out var peFile);
+            //X86AssemblyGenerator.Ou(_asm, out var text);
+            var text = peFile.OutputAsText("main.main@void");
+            File.WriteAllText(outputPath, text);
+            _asm.OutputToFile(outputPath + ".exe");
         } catch(Exception ex)
         {
             return (false, ex.Message);
@@ -54,25 +60,25 @@ public class MineralCompiler
     {
         if (functionContext.IsImported)
         {
-            var fullLibraryPath = Path.GetFullPath(functionContext.ImportLibraryPath!.Lexeme);
-            var importLibrary = _asm.ImportLibraries.Find(x => x.LibraryPath == fullLibraryPath);
+            var libraryPath = functionContext.ImportLibraryPath!.Lexeme;
+            var importLibrary = _asm.ImportLibraries.Find(x => x.LibraryPath == libraryPath);
             string libraryAlias;
             if (importLibrary != null) libraryAlias = importLibrary.LibraryAlias;
             else
             {
                 libraryAlias = _asm.CreateUniqueLabel(); // Randomly generate library alias
-                importLibrary = new X86AssemblyContext.ImportLibrary(fullLibraryPath, libraryAlias); 
+                importLibrary = new X86AssemblyContext.ImportLibrary(libraryPath, libraryAlias); 
                 _asm.AddImportLibrary(importLibrary);
             }
-            var functionSignature = functionContext.GetFunctionSignature();
             var parameters = functionContext.Parameters.Select(kv => new X86FunctionLocalData(kv.Key.Lexeme, kv.Value.GetStackSize())).ToList();
-            var function = new X86AssemblyContext.ImportedFunction(CallingConvention.StdCall, libraryAlias, functionContext.FunctionName.Lexeme, functionSignature, parameters);
+            var function = new X86AssemblyContext.ImportedFunction(CallingConvention.StdCall, libraryAlias, functionContext.FunctionName.Lexeme, functionContext.GetDecoratedFunctionLabel(), parameters);
             importLibrary.AddImportedFunction(function);
         }
     }
 
     private void CompileFunction(FunctionContext functionContext)
     {
+        if (functionContext.IsImported) return; 
         var parameters = functionContext.Parameters.Select(kv => new X86FunctionLocalData(kv.Key.Lexeme, kv.Value.GetStackSize())).ToList();
         var localVariables = functionContext.LocalVariables.Select(kv => new X86FunctionLocalData(kv.Key.Lexeme, kv.Value.GetStackSize())).ToList();
         var function = new X86Function(CallingConvention.StdCall, functionContext.GetFunctionSignature(), parameters, localVariables, false, ""); // TODO: Exports
@@ -148,7 +154,6 @@ public class MineralCompiler
             CompileForError(callExpression);
         } else
         {
-            CompileToRegister(assignmentStatement.Value, X86Register.eax); // Push value to assign onto the stack
             RegisterOffset assignmentTarget;
             if (assignmentStatement.AssignmentTarget is IdentifierLValue identifierLValue)
             {
@@ -168,6 +173,7 @@ public class MineralCompiler
             else if (assignmentStatement.AssignmentTarget is DiscardLValue)
             {
                 // Pass
+                CompileToRegister(assignmentStatement.Value, X86Register.eax);
             }
             else throw new NotSupportedException($"lvalue of type '{assignmentStatement.AssignmentTarget.GetType()}' is not supported");        
         }
@@ -220,7 +226,7 @@ public class MineralCompiler
         if (callExpression.FunctionContext != null)
         {
             // it is a direct call
-            _asm.Call(callExpression.FunctionContext.GetFunctionSignature(), false);
+            _asm.Call(callExpression.FunctionContext.GetDecoratedFunctionLabel(), false);
         }
         else
         {
@@ -265,7 +271,7 @@ public class MineralCompiler
         if (callExpression.FunctionContext != null)
         {
             // it is a direct call
-            _asm.Call(callExpression.FunctionContext.GetFunctionSignature(), callExpression.FunctionContext.IsImported);
+            _asm.Call(callExpression.FunctionContext.GetDecoratedFunctionLabel(), callExpression.FunctionContext.IsImported);
         }
         else
         {
@@ -294,7 +300,7 @@ public class MineralCompiler
     {
         if (identifierExpression.FunctionContext != null)
         {
-            _asm.Mov(register, identifierExpression.FunctionContext.GetFunctionSignature());
+            _asm.Mov(register, identifierExpression.FunctionContext.GetDecoratedFunctionLabel());
         }
 
         else _asm.Mov(register, _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _));
@@ -404,14 +410,18 @@ public class MineralCompiler
 
     private void CompileAsArgument(IdentifierExpression identifierExpression)
     {
-        CompileToRegister(identifierExpression, X86Register.eax);
-        _asm.Push(X86Register.eax);
+        var memoryLocation = _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _);
+        _asm.Push(memoryLocation);
     }
 
     private void CompileAsArgument(MemberAccessExpression memberAccessExpression)
     {
-        CompileToRegister(memberAccessExpression, X86Register.eax);
-        _asm.Push(X86Register.eax);
+        CompileToRegister(memberAccessExpression.Instance, X86Register.eax);
+        if (memberAccessExpression.Instance.ConcreteType is not StructType instanceType)
+            throw new InvalidOperationException($"expect left hand side of member access to be struct type but got '{memberAccessExpression.Instance.ConcreteType}'");
+        if (!instanceType.TryGetMemberOffset(memberAccessExpression.MemberToAccess, out var offset))
+            throw new InvalidOperationException($"type '{instanceType}' does not contain member '{memberAccessExpression.MemberToAccess.Lexeme}'");
+        _asm.Push(Offset.Create(X86Register.eax, offset));
     }
 
     private void CompileAsArgument(CallExpression callExpression)
