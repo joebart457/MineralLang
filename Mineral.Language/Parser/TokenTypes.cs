@@ -32,6 +32,7 @@ public static class TokenTypes
     public const string Public = "Public";
     public const string Error = "Error";
     public const string Return = "Return";
+    public const string StackAllocate = "StackAllocate";
 
     public const string Null = "Null";
 
@@ -77,6 +78,7 @@ public static class TokenizerFactory
             new(TokenTypes.Public, "pub"),
             new(TokenTypes.Error, "error"),
             new(TokenTypes.Return, "return"),
+            new(TokenTypes.StackAllocate, "stackalloc"),
             new(TokenTypes.Null, "null"),
 
             new(TokenTypes.String, "\"", enclosingLeft: "\"", enclosingRight: "\""),

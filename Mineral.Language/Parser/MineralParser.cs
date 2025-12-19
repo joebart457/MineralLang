@@ -122,17 +122,22 @@ public class MineralParser: TokenParser
         var typeName = Consume(TokenTypes.Word, "expect typename");
         Consume(TokenTypes.LCurly, "expect declaration structure: type TypeName { int field1; ... }");
         var fields = new List<TypeDeclarationField>();
-        do
+        if (!AdvanceIfMatch(TokenTypes.RCurly))
         {
-            DoWithSeek(TokenTypes.Semicolon, () =>
+            do
             {
-                var fieldType = ParseTypeSymbol();
-                var fieldName = Consume(TokenTypes.Word, "expect field name");
-                fields.Add(new(fieldName, fieldType));
-            });
+                DoWithSeek(TokenTypes.Semicolon, () =>
+                {
+                    var fieldType = ParseTypeSymbol();
+                    var fieldName = Consume(TokenTypes.Word, "expect member name");
+                    Consume(TokenTypes.Semicolon, "expect ';' after member name");
+                    fields.Add(new(fieldName, fieldType));
+                });
 
-        } while (AdvanceIfMatch(TokenTypes.Semicolon));
-        Consume(TokenTypes.RCurly, "expect enclosing '}' in type declaration");
+            } while (!AtEnd() && !Match(TokenTypes.RCurly));
+            Consume(TokenTypes.RCurly, "expect enclosing '}' in type declaration");
+        }
+
         return new TypeDeclaration(typeName, fields);
     }
 
@@ -260,7 +265,29 @@ public class MineralParser: TokenParser
 
     private ExpressionBase ParseExpression()
     {
-        return ParseGetOrCallExpression();
+        var start = Current().Start;
+        ExpressionBase expression;
+        if (AdvanceIfMatch(TokenTypes.StackAllocate)) expression = ParseStackAllocate();
+        else if (AdvanceIfMatch(TokenTypes.ReferenceType))
+        {
+            var potentialReference = ParseGetOrCallExpression();
+            if (potentialReference is MemberAccessExpression memberAccessExpression)
+            {
+                expression = new ReferenceExpression(memberAccessExpression.Instance, memberAccessExpression.MemberToAccess);
+            }
+            else if (potentialReference is IdentifierExpression identifierExpression)
+                expression = new ReferenceExpression(null, identifierExpression.Symbol);
+            else throw new ParsingException(Previous(), $"unexpected expression type on right hand side of 'ref'");
+        }
+        else expression = ParseGetOrCallExpression();
+        expression.End = Previous().End;
+        return expression;
+    }
+
+    private ExpressionBase ParseStackAllocate()
+    {
+        var typeToAllocate = ParseTypeSymbol();
+        return new StackAllocateExpression(typeToAllocate);
     }
 
     private ExpressionBase ParseGetOrCallExpression()

@@ -5,8 +5,14 @@ namespace Mineral.Language.Compiler;
 
 public static class CompilerTypeExtensions
 {
-    public static int GetStackSize(this ConcreteType concreteType) => concreteType is StructType s? throw new InvalidOperationException("cannot determine stack size of struct") : 4;
-
+    public static int GetStackSize(this ConcreteType concreteType) => concreteType is StructType s? GetSizeOfStruct(s) : 4;
+    private static int GetSizeOfStruct(StructType structType)
+    {
+        int accum = 0;
+        foreach (var member in structType.Members)
+            accum += GetStackSize(member.FieldType);
+        return accum;
+    }
     public static bool TryGetMemberOffset(this StructType structType, Token memberName, out int offset)
     {
         offset = 0;
@@ -20,7 +26,32 @@ public static class CompilerTypeExtensions
             }
             accum += member.FieldType.GetStackSize();
         }
+        return false;    
+    }
+
+
+    public static bool TryGetMemberOffsetFromStructOrReference(this ConcreteType concreteType, Token memberName, out bool isReferenceType, out int offset)
+    {
+        isReferenceType = false;
+        offset = 0;
+
+        StructType? structType = null;
+        if (concreteType is ReferenceType referenceType && referenceType.ReferencedType is StructType potentialStructType)
+        {
+            structType = potentialStructType;
+            isReferenceType = true;
+        }
+        if (concreteType is StructType potentialStructType2)
+            structType = potentialStructType2;
+        if (structType != null)
+        {
+            foreach (var member in structType.Members)
+            {
+                if (member.Name.Lexeme == memberName.Lexeme)
+                    return true;
+                offset += member.FieldType.GetStackSize();
+            }
+        }
         return false;
-        
     }
 }

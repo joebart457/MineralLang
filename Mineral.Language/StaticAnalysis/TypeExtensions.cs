@@ -1,4 +1,7 @@
 ﻿
+using Mineral.Language.Expressions;
+using Tokenizer.Core.Models;
+
 namespace Mineral.Language.StaticAnalysis;
 
 internal static class TypeExtensions
@@ -112,5 +115,51 @@ internal static class TypeExtensions
     public static bool IsVoidType(this ConcreteType type)
     {
         return type.GetType() == typeof(ConcreteType) && type.BuiltinType == BuiltinType.Void;
+    }
+
+    public static bool IsValidReturnType(this ConcreteType type)
+    {
+        return type is not StructType && type is not NullPointerType;
+    }
+
+    public static bool IsValidParameterType(this ConcreteType type)
+    {
+        return type is not StructType && type is not NullPointerType;
+    }
+
+    public static bool IsValidMemberType(this ConcreteType type)
+    {
+        return type is not StructType && type is not NullPointerType;
+    }
+
+
+    public static bool IsStructReferenceOrStructType(this ConcreteType concreteType)
+    {
+        if (concreteType is StructType) return true;
+        if (concreteType is ReferenceType referenceType && referenceType.ReferencedType is StructType) return true;
+        return false;
+    }
+
+    public static bool TryFindMember(this ConcreteType concreteType, ModuleErrors errors, Token memberName, out StructTypeField? field)
+    {
+        field = null;
+        StructType? structType = null;
+        if (concreteType is ReferenceType referenceType && referenceType.ReferencedType is StructType potentialStructType)
+            structType = potentialStructType;
+        if (concreteType is StructType potentialStructType2) 
+            structType = potentialStructType2;
+        if (structType != null)
+        {
+            var foundMember = structType.Members.Find(m => m.Name.Lexeme == memberName.Lexeme);
+            if (foundMember == null)
+            {
+                errors.Add(memberName, $"Struct type '{structType}' does not contain member '{memberName.Lexeme}'");
+                return false;
+            }
+            field = foundMember;
+            return true;
+        }
+        errors.Add(memberName, $"Cannot access member '{memberName.Lexeme}' of non-struct type '{concreteType}'");
+        return false;
     }
 }

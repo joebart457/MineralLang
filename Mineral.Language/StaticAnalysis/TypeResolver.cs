@@ -1,8 +1,10 @@
-﻿using Mineral.Language.Declarations;
+﻿using Mineral.Language.Compiler;
+using Mineral.Language.Declarations;
 using Mineral.Language.Expressions;
 using Mineral.Language.LValues;
 using Mineral.Language.Parser;
 using Mineral.Language.Statements;
+using System;
 using Tokenizer.Core.Constants;
 using Tokenizer.Core.Models;
 
@@ -166,6 +168,8 @@ public class TypeResolver
             foreach (var member in typeDeclaration.Members)
             {
                 var memberType = ResolveDeclaredType(errors, module, member.FieldType);
+                if (!memberType.IsValidMemberType())
+                    errors.Add(member.FieldType, $"type '{memberType}' is not a valid type for a struct member");
                 declaredStructType.Members.Add(new StructTypeField(member.FieldName, memberType));
             }
         }
@@ -273,18 +277,23 @@ public class TypeResolver
         var context = new FunctionContext(module);
         context.FunctionName = functionDeclaration.FunctionName;
         context.ReturnType = ResolveDeclaredType(errors, module, functionDeclaration.ReturnType);
+        if (!context.ReturnType.IsValidReturnType())
+            errors.Add(functionDeclaration.ReturnType, $"type '{context.ReturnType}' is not a valid return type");
         context.IsErrorable = functionDeclaration.IsErrorable;
         context.IsPublic = functionDeclaration.IsPublic;
         context.ImportLibraryPath = functionDeclaration.ImportLibraryPath;
         foreach (var parameter in functionDeclaration.Parameters)
         {
-            var parameterType = ResolveDeclaredType(errors, module,parameter.ParameterType);
+            var parameterType = ResolveDeclaredType(errors, module, parameter.ParameterType);
+            if (!parameterType.IsValidParameterType())
+                errors.Add(parameter.ParameterType, $"type '{parameterType}' is not a valid type for a function parameter");
             if (context.Parameters.ContainsKey(parameter.ParameterName))
             {
                 errors.Add(parameter.ParameterName, $"Parameter '{parameter.ParameterName.Lexeme}' is already defined in function '{functionDeclaration.FunctionName.Lexeme}'");
                 context.Parameters[new Token(BuiltinTokenTypes.Word, "?", Location.Zero, Location.Zero)] = parameterType; // register as unkown parameter to avoid cascading errors
                 continue;
             }
+
             context.Parameters[parameter.ParameterName] = parameterType;
         }
         var key = CreateFunctionKey(errors, module, functionDeclaration);
@@ -451,7 +460,7 @@ public class TypeResolver
             
             if (assignmentStatement.AssignmentTarget is IdentifierLValue identifierExpression)
             {
-                assignmentStatement.AssignmentTarget.TagAsType(ResolveOrCreateVariable(context, identifierExpression.VariableName, valueType));
+                assignmentStatement.AssignmentTarget.TagAsType(ResolveOrCreateVariable(errors, context, identifierExpression.VariableName, valueType));
             }
             else if (assignmentStatement.AssignmentTarget is DiscardLValue)
             {
@@ -475,7 +484,7 @@ public class TypeResolver
             }
             if (errorTarget is IdentifierLValue errorIdentifierExpression)
             {
-                errorTarget.TagAsType(ResolveOrCreateVariable(context, errorIdentifierExpression.VariableName, NativeTypes.Error));
+                errorTarget.TagAsType(ResolveOrCreateVariable(errors, context, errorIdentifierExpression.VariableName, NativeTypes.Error));
             }
             else if (errorTarget is DiscardLValue)
             {
@@ -489,7 +498,7 @@ public class TypeResolver
         }
     }
 
-    private ConcreteType ResolveOrCreateVariable(FunctionContext context, Token variableName, ConcreteType attemptedAssignmentType)
+    private ConcreteType ResolveOrCreateVariable(ModuleErrors errors, FunctionContext context, Token variableName, ConcreteType attemptedAssignmentType)
     {
         if (context.LocalVariables.TryGetValue(variableName, out var existingType))
         {
@@ -502,6 +511,12 @@ public class TypeResolver
         else
         {
             // If it doesn't exist, we assume it's being declared here
+            if (attemptedAssignmentType is NullPointerType)
+            {
+                // if the attempted assignment is null and the variable does not exist,
+                // we are unable to determine the actual type of the variable, so error
+                errors.Add(variableName, $"unable to determine assigned type of variable {variableName.Lexeme}");
+            }
             context.LocalVariables[variableName] = attemptedAssignmentType;
             return attemptedAssignmentType;
         }
@@ -532,6 +547,12 @@ public class TypeResolver
                 break;
             case LiteralExpression literalExpression:
                 Resolve(errors, module, context, literalExpression);
+                break;
+            case StackAllocateExpression stackAllocateExpression:
+                Resolve(errors, module, context, stackAllocateExpression);
+                break;
+            case ReferenceExpression referenceExpression:
+                Resolve(errors, module, context, referenceExpression);
                 break;
             default:
                 errors.Add(expression, $"Unknown expression type '{expression.GetType()}'");
@@ -650,13 +671,8 @@ public class TypeResolver
             errors.Add(memberAccessExpression.MemberToAccess, $"Cannot access member '{memberAccessExpression.MemberToAccess.Lexeme}' of non-struct type '{instanceType}'");
             return;
         }
-        var foundMember = structType.Members.Find(m => m.Name.Lexeme == memberAccessExpression.MemberToAccess.Lexeme);
-        if (foundMember == null)
-        {
-            errors.Add(memberAccessExpression.MemberToAccess, $"Struct type '{structType}' does not contain member '{memberAccessExpression.MemberToAccess.Lexeme}'");
-            return;
-        }
-        memberAccessExpression.TagAsType(foundMember.FieldType);
+        if (instanceType.TryFindMember(errors, memberAccessExpression.MemberToAccess, out var member) && member != null)
+            memberAccessExpression.TagAsType(member.FieldType);
     }
 
     public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, LiteralExpression literalExpression)
@@ -672,7 +688,41 @@ public class TypeResolver
         else
             errors.Add(literalExpression, $"Unknown literal type for value '{literalExpression.Value}'");
     }
+
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, StackAllocateExpression stackAllocateExpression)
+    {
+        var typeToAllocate = ResolveDeclaredType(errors, module, stackAllocateExpression.TypeToAllocate);
+        stackAllocateExpression.TagAsType(typeToAllocate);
+    }
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, ReferenceExpression referenceExpression)
+    {
+        if (referenceExpression.Instance != null)
+        {
+            Resolve(errors, module, context, referenceExpression.Instance);
+            if (referenceExpression.Instance.ConcreteType is not StructType structType)
+            {
+                errors.Add(referenceExpression.MemberToAccess, $"Cannot access member '{referenceExpression.MemberToAccess.Lexeme}' of non-struct type '{referenceExpression.Instance.ConcreteType}'");
+                return;
+            }
+            var foundMember = structType.Members.Find(m => m.Name.Lexeme == referenceExpression.MemberToAccess.Lexeme);
+            if (foundMember == null)
+            {
+                errors.Add(referenceExpression.MemberToAccess, $"Struct type '{structType}' does not contain member '{referenceExpression.MemberToAccess.Lexeme}'");
+                return;
+            }
+            referenceExpression.TagAsType(new ReferenceType(foundMember.FieldType));
+            return;
+        }
+
+        if (!context.TryGetVariableType(referenceExpression.MemberToAccess, out var variableType))
+        {
+            errors.Add(referenceExpression.MemberToAccess, $"Undefined variable '{referenceExpression.MemberToAccess.Lexeme}'");
+            return;
+        }
+        referenceExpression.TagAsType(new ReferenceType(variableType));
+    }
     
+
 }
 
 public class ModuleErrors

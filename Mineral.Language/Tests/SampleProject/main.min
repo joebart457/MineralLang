@@ -6,8 +6,15 @@ import {
 }
 
 
+type Test{
+	int x;
+	string message;
+}
+
 pub func main() int {
-	_ = io.log("Hello from Mineral!", 19);
+	x = stackalloc Test;
+	x.message = "Hello There!";
+	_ = io.log(x.message, 4);
 	return 0; 
 }
 
