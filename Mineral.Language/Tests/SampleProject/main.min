@@ -5,7 +5,10 @@ import {
 	"io"
 }
 
-pub func main() void {
-	_ = io.log("test");
 
+pub func main() int {
+	_ = io.log("Hello from Mineral!", 19);
+	return 0; 
 }
+
+

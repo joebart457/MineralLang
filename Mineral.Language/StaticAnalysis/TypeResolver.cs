@@ -361,14 +361,79 @@ public class TypeResolver
 
     public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, ConditionalStatement conditionalStatement)
     {
-        Resolve(errors, module, context, conditionalStatement.ConditionalTarget);
-        foreach(var statement in conditionalStatement.ThenBlock) Resolve(errors, module, context, statement); // TODO Encountered return?
-        var conditionType = conditionalStatement.ConditionalTarget.ConcreteType;
+        ConcreteType conditionType;
+        if (conditionalStatement.ConditionalTarget is DiscardLValue)
+        {
+            // Pass
+            conditionType = new ConcreteType(BuiltinType.Int); // fake that this case is testable
+            // TODO: fully define functionality and meaning of discard conditional. For now, it will
+            // mean test the last error that occured
+        }
+        else
+        {
+            ResolveLValue(errors, module, context, conditionalStatement.ConditionalTarget);
+            conditionType = conditionalStatement.ConditionalTarget.ConcreteType;
+        }
+        foreach (var statement in conditionalStatement.ThenBlock) Resolve(errors, module, context, statement); // TODO Encountered return?
         if (!conditionType.IsConditionalTestable())
         {
             errors.Add(conditionalStatement.ConditionalTarget, $"Cannot use type '{conditionType}' as a conditional test");
         }
     }
+
+    private void ResolveLValue(ModuleErrors errors, ModuleContext module, FunctionContext context, LValue lValue)
+    {
+        switch (lValue)
+        {
+            case IdentifierLValue identifierLValue:
+                ResolveLValue(errors, module, context, identifierLValue);
+                break;
+            case InstanceMemberLValue instanceMemberLValue:
+                ResolveLValue(errors, module, context, instanceMemberLValue);
+                break;
+            // We do not include DiscardLValue because that must be handled at the source instead of resolved here
+            default:
+                errors.Add(lValue, $"Unkown lValue type '{lValue.GetType()}'");
+                break;
+        }
+    }
+
+    private void ResolveLValue(ModuleErrors errors, ModuleContext module, FunctionContext context, IdentifierLValue identifierLValue)
+    {
+        ConcreteType? variableType;
+        if (context.TryGetVariableType(identifierLValue.VariableName, out variableType))
+        {
+            identifierLValue.TagAsType(variableType);
+
+            return;
+        }
+        if (context.Parameters.TryGetValue(identifierLValue.VariableName, out variableType))
+        {
+            identifierLValue.TagAsType(variableType);
+            return;
+        }
+
+        errors.Add(identifierLValue, $"Undefined variable '{identifierLValue.VariableName.Lexeme}'");
+    }
+
+    private void ResolveLValue(ModuleErrors errors, ModuleContext module, FunctionContext context, InstanceMemberLValue instanceMemberLValue)
+    {
+        ResolveLValue(errors, module, context, instanceMemberLValue.Instance);
+        var instanceType = instanceMemberLValue.Instance.ConcreteType;
+        if (instanceType is not StructType structType)
+        {
+            errors.Add(instanceMemberLValue.Member, $"Cannot access member '{instanceMemberLValue.Member.Lexeme}' of non-struct type '{instanceType}'");
+            return;
+        }
+        var foundMember = structType.Members.Find(m => m.Name.Lexeme == instanceMemberLValue.Member.Lexeme);
+        if (foundMember == null)
+        {
+            errors.Add(instanceMemberLValue.Member, $"Struct type '{structType}' does not contain member '{instanceMemberLValue.Member.Lexeme}'");
+            return;
+        }
+        instanceMemberLValue.TagAsType(foundMember.FieldType);
+    }
+
 
     public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, AssignmentStatement assignmentStatement)
     {
@@ -392,7 +457,7 @@ public class TypeResolver
             {
                 // Pass
             }
-            else Resolve(errors, module, context, assignmentStatement.AssignmentTarget);
+            else ResolveLValue(errors, module, context, assignmentStatement.AssignmentTarget);
 
             if (!assignmentStatement.AssignmentTarget.ConcreteType.IsAssignableFrom(valueType))
             {
@@ -416,7 +481,7 @@ public class TypeResolver
             {
                 // Pass
             }
-            else Resolve(errors, module, context, errorTarget);
+            else ResolveLValue(errors, module, context, errorTarget);
             if (!errorTarget.ConcreteType.IsErrorType())
             {
                 errors.Add(errorTarget, $"Error target must be of error type, but got '{errorTarget.ConcreteType}'");
@@ -573,8 +638,8 @@ public class TypeResolver
         }
 
         errors.Add(identifierExpression, $"Undefined variable '{identifierExpression.Symbol.Lexeme}'");
-
     }
+
 
     public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, MemberAccessExpression memberAccessExpression)
     {

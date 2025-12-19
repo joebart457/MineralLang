@@ -28,7 +28,7 @@ public class MineralCompiler
                 CompileModule(module);
             }
 
-            _asm.SetEntryPoint("main.main@void");
+            _asm.SetEntryPoint("main.main@int");
             _asm.SetOutputTarget(OutputTarget.Exe);
             var error = _asm.OutputToPeFile(out var peFile);
             //X86AssemblyGenerator.Ou(_asm, out var text);
@@ -136,10 +136,31 @@ public class MineralCompiler
 
     private void Compile(ConditionalStatement conditionalStatement)
     {
-        CompileToRegister(conditionalStatement.ConditionalTarget, X86Register.edx); // Sort of hacky, but asm optimizer will optimize this away for calls with immediate error checks 
+        if (conditionalStatement.ConditionalTarget is IdentifierLValue identifierLValue)
+        {
+            var memoryLocation = _asm.GetIdentifierOffset(identifierLValue.VariableName.Lexeme, out _);
+            _asm.Mov(X86Register.edx, memoryLocation);
+        }
+        else if (conditionalStatement.ConditionalTarget is InstanceMemberLValue instanceMemberLValue)
+        {
+            CompileToRegister(instanceMemberLValue.Instance, X86Register.ecx); // Since expressions by default only use eax and edx, we use ecx so we have no need to store the assignment value temporarily
+            if (instanceMemberLValue.Instance.ConcreteType is StructType instanceType && instanceType.TryGetMemberOffset(instanceMemberLValue.Member, out var offset))
+            {
+               var memoryLocation = Offset.Create(X86Register.ecx, offset);
+                _asm.Mov(X86Register.edx, memoryLocation);
+            }
+            else throw new InvalidOperationException($"conditional: unable to find member '{instanceMemberLValue.Member.Lexeme}' in type '{instanceMemberLValue.Instance.ConcreteType}' or '{instanceMemberLValue.Instance.ConcreteType}' is not a struct type");
+
+        }
+        else if (conditionalStatement.ConditionalTarget is DiscardLValue)
+        {
+            // We just want to test whatever is currently in edx
+
+        }
+        else throw new NotSupportedException($"lvalue of type '{conditionalStatement.ConditionalTarget.GetType()}' is not supported");
         _asm.Test(X86Register.edx, X86Register.edx);
         var endIfLabel = _asm.CreateUniqueLabel();
-        _asm.Jnz(endIfLabel);
+        _asm.Jz(endIfLabel);
         foreach(var statment in conditionalStatement.ThenBlock)
             Compile(statment);
         _asm.Label(endIfLabel);

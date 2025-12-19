@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Assembler.Core" Version="0.2.29" />
+    <PackageReference Include="Assembler.Core" Version="0.2.31" />
     <PackageReference Include="Tokenizer.Core" Version="0.1.6" />
   </ItemGroup>
 
