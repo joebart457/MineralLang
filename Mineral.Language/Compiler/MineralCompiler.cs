@@ -135,28 +135,8 @@ public class MineralCompiler
 
     private void Compile(ConditionalStatement conditionalStatement)
     {
-        if (conditionalStatement.ConditionalTarget is IdentifierLValue identifierLValue)
-        {
-            var memoryLocation = _asm.GetIdentifierOffset(identifierLValue.VariableName.Lexeme, out _);
-            _asm.Mov(X86Register.edx, memoryLocation);
-        }
-        else if (conditionalStatement.ConditionalTarget is InstanceMemberLValue instanceMemberLValue)
-        {
-            CompileToRegister(instanceMemberLValue.Instance, X86Register.ecx); // Since expressions by default only use eax and edx, we use ecx so we have no need to store the assignment value temporarily
-            if (instanceMemberLValue.Instance.ConcreteType is StructType instanceType && instanceType.TryGetMemberOffset(instanceMemberLValue.Member, out var offset))
-            {
-               var memoryLocation = Offset.Create(X86Register.ecx, offset);
-                _asm.Mov(X86Register.edx, memoryLocation);
-            }
-            else throw new InvalidOperationException($"conditional: unable to find member '{instanceMemberLValue.Member.Lexeme}' in type '{instanceMemberLValue.Instance.ConcreteType}' or '{instanceMemberLValue.Instance.ConcreteType}' is not a struct type");
-
-        }
-        else if (conditionalStatement.ConditionalTarget is DiscardLValue)
-        {
-            // We just want to test whatever is currently in edx
-
-        }
-        else throw new NotSupportedException($"lvalue of type '{conditionalStatement.ConditionalTarget.GetType()}' is not supported");
+        var memoryLocation = CompileAndReturnAssignmentTargetFromLValue(conditionalStatement.ConditionalTarget);
+        if (memoryLocation != null) _asm.Mov(X86Register.edx, memoryLocation);
         _asm.Test(X86Register.edx, X86Register.edx);
         var endIfLabel = _asm.CreateUniqueLabel();
         _asm.Jz(endIfLabel);
@@ -206,10 +186,17 @@ public class MineralCompiler
         {
             var instanceMemoryLocation = CompileAndReturnAssignmentTargetFromLValue(instanceMemberLValue.Instance);
             if (instanceMemoryLocation == null) throw new InvalidOperationException("Invalid discard as left hand side of member access");
-            _asm.Mov(X86Register.ecx, instanceMemoryLocation);// Since expressions by default only use eax and edx, we use ecx so we have no need to store the assignment value temporarily
-            if (instanceMemberLValue.Instance.ConcreteType is StructType instanceType && instanceType.TryGetMemberOffset(instanceMemberLValue.Member, out var offset))
+            if (instanceMemberLValue.Instance.ConcreteType.TryGetMemberOffsetFromStructOrReference(instanceMemberLValue.Member, out var isReferenceType, out var offset))
             {
-                return Offset.Create(X86Register.ecx, offset);
+                if (isReferenceType)
+                {
+                    _asm.Mov(X86Register.ecx, instanceMemoryLocation); // Since expressions by default only use eax and edx, we use ecx so we have no need to store the assignment value temporarily
+                    return Offset.Create(X86Register.ecx, offset);
+                }
+
+                // TODO
+                _asm.Lea(X86Register.ecx, instanceMemoryLocation); // Since expressions by default only use eax and edx, we use ecx so we have no need to store the assignment value temporarily
+                return Offset.Create(X86Register.ecx, -offset);
             }
             else throw new InvalidOperationException($"unable to find member '{instanceMemberLValue.Member.Lexeme}' in type '{instanceMemberLValue.Instance.ConcreteType}' or '{instanceMemberLValue.Instance.ConcreteType}' is not a struct type");
         }
@@ -319,8 +306,8 @@ public class MineralCompiler
         if (memberAccessExpression.Instance is not IdentifierExpression identifierExpression)
             throw new InvalidOperationException($"unexpected expression type evaluated to struct '{memberAccessExpression.Instance.GetType()}'");
         var lhsOffset = _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _);
-        lhsOffset.Offset += offset;
-        _asm.Lea(register, lhsOffset);
+        lhsOffset.Offset -= offset;
+        _asm.Mov(register, lhsOffset);
     }
 
     private void CompileToRegister(IdentifierExpression identifierExpression, X86Register register)
@@ -359,7 +346,7 @@ public class MineralCompiler
                 throw new InvalidOperationException($"expect left hand side of member access to be struct type but got '{referenceExpression.Instance.ConcreteType}'");
             if (!instanceType.TryGetMemberOffset(referenceExpression.MemberToAccess, out var offset))
                 throw new InvalidOperationException($"type '{instanceType}' does not contain member '{referenceExpression.MemberToAccess.Lexeme}'");
-            _asm.Lea(register, Offset.Create(register, offset));
+            _asm.Lea(register, Offset.Create(register, -offset));
             return;
         }
 
@@ -404,7 +391,24 @@ public class MineralCompiler
 
     private void CompileAsAssignmentValue(RegisterOffset assignmentTarget, MemberAccessExpression memberAccessExpression)
     {
-        CompileToRegister(memberAccessExpression, X86Register.eax);
+        var instanceType = memberAccessExpression.Instance.ConcreteType;
+        if (!instanceType.TryGetMemberOffsetFromStructOrReference(memberAccessExpression.MemberToAccess, out var isReferenceType, out var offset))
+        {
+            throw new InvalidOperationException($"expect left hand side of member access to be struct type but got '{memberAccessExpression.Instance.ConcreteType}' or type '{instanceType}' does not contain member '{memberAccessExpression.MemberToAccess.Lexeme}'");
+        }
+        if (isReferenceType)
+        {
+            CompileToRegister(memberAccessExpression.Instance, X86Register.eax);
+            _asm.Mov(X86Register.eax, Offset.Create(X86Register.eax, offset));
+            _asm.Mov(assignmentTarget, X86Register.eax);
+            return;
+        }
+        // Since you cannot assign struct types to anything other than local variables
+        if (memberAccessExpression.Instance is not IdentifierExpression identifierExpression)
+            throw new InvalidOperationException($"unexpected expression type evaluated to struct '{memberAccessExpression.Instance.GetType()}'");
+        var lhsOffset = _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _);
+        lhsOffset.Offset -= offset;
+        _asm.Mov(X86Register.eax, lhsOffset);
         _asm.Mov(assignmentTarget, X86Register.eax);
     }
 
@@ -493,9 +497,8 @@ public class MineralCompiler
         if (memberAccessExpression.Instance is not IdentifierExpression identifierExpression)
             throw new InvalidOperationException($"unexpected expression type evaluated to struct '{memberAccessExpression.Instance.GetType()}'");
         var lhsOffset = _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _);
-        lhsOffset.Offset += offset;
-        _asm.Lea(X86Register.eax, lhsOffset);
-        _asm.Push(X86Register.eax);
+        lhsOffset.Offset -= offset;
+        _asm.Push(lhsOffset);
     }
 
     private void CompileAsArgument(CallExpression callExpression)
