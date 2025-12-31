@@ -5,7 +5,7 @@ namespace Mineral.Language.Compiler;
 
 public static class CompilerTypeExtensions
 {
-    public static int GetStackSize(this ConcreteType concreteType) => concreteType is StructType s? GetSizeOfStruct(s) : 4;
+    public static int GetStackSize(this ConcreteType concreteType) => concreteType is StructType s? GetSizeOfStruct(s) : 8;
     private static int GetSizeOfStruct(StructType structType)
     {
         int accum = 0;

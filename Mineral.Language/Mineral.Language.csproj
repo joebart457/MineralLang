@@ -8,8 +8,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Assembler.Core" Version="0.2.32" />
     <PackageReference Include="Tokenizer.Core" Version="0.1.6" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\x86-64Assembler\X86_64Assembler\X86_64Assembler.csproj" />
   </ItemGroup>
 
 </Project>

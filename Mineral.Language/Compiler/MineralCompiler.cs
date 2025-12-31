@@ -1,11 +1,10 @@
-﻿using Assembler.Core;
-using Assembler.Core.Constants;
-using Assembler.Core.Models;
+﻿
 using Mineral.Language.Expressions;
 using Mineral.Language.LValues;
 using Mineral.Language.Statements;
 using Mineral.Language.StaticAnalysis;
 using System.Runtime.InteropServices;
+using X86_64Assembler;
 
 
 namespace Mineral.Language.Compiler;
@@ -15,7 +14,7 @@ public class MineralCompiler
 
     private X86AssemblyContext _asm = new();
 
-    public (bool success, string error) CompileProgram(string outputPath, ProgramContext program)
+    public (bool success, string error) CompileProgram(string outputPath, ProgramContext program, string entryPoint = "main.main@int", OutputTarget outputTarget = OutputTarget.Exe)
     {
         try
         {
@@ -27,13 +26,11 @@ public class MineralCompiler
                 CompileModule(module);
             }
 
-            _asm.SetEntryPoint("main.main@int");
-            _asm.SetOutputTarget(OutputTarget.Exe);
-            var error = _asm.OutputToPeFile(out var peFile);
-            //X86AssemblyGenerator.Ou(_asm, out var text);
-            var text = peFile.OutputAsText("main.main@void");
+            var error = _asm.OutputX86Assembly64Bit(outputTarget, entryPoint, Path.GetFileName(outputPath), out var peFile);
+            var bytes = peFile.AssembleProgram(entryPoint);
+            File.WriteAllBytes(outputPath, bytes);
+            var text = peFile.EmitDecodedAssembly(entryPoint);
             File.WriteAllText(outputPath, text);
-            _asm.OutputToFile(outputPath + ".exe");
         } catch(Exception ex)
         {
             return (false, ex.Message);
@@ -60,18 +57,9 @@ public class MineralCompiler
         if (functionContext.IsImported)
         {
             var libraryPath = functionContext.ImportLibraryPath!.Lexeme;
-            var importLibrary = _asm.ImportLibraries.Find(x => x.LibraryPath == libraryPath);
-            string libraryAlias;
-            if (importLibrary != null) libraryAlias = importLibrary.LibraryAlias;
-            else
-            {
-                libraryAlias = _asm.CreateUniqueLabel(); // Randomly generate library alias
-                importLibrary = new X86AssemblyContext.ImportLibrary(libraryPath, libraryAlias); 
-                _asm.AddImportLibrary(importLibrary);
-            }
             var parameters = functionContext.Parameters.Select(kv => new X86FunctionLocalData(kv.Key.Lexeme, kv.Value.GetStackSize())).ToList();
-            var function = new X86AssemblyContext.ImportedFunction(CallingConvention.StdCall, libraryAlias, functionContext.FunctionName.Lexeme, functionContext.GetDecoratedFunctionLabel(), parameters);
-            importLibrary.AddImportedFunction(function);
+
+            _asm.AddImport(libraryPath, CallingConvention.Cdecl, functionContext.GetDecoratedFunctionLabel(), functionContext.FunctionName.Lexeme, parameters);
         }
     }
 
@@ -82,7 +70,7 @@ public class MineralCompiler
         var localVariables = functionContext.LocalVariables.Select(kv => new X86FunctionLocalData(kv.Key.Lexeme, kv.Value.GetStackSize())).ToList();
         var function = new X86Function(CallingConvention.StdCall, functionContext.GetFunctionSignature(), parameters, localVariables, false, ""); // TODO: Exports
         _asm.EnterFunction(function);
-        _asm.SetupStackFrame();
+
         foreach(var statement in functionContext.BodyStatements)
         {
             // Compile each statement
@@ -90,8 +78,8 @@ public class MineralCompiler
         }
         if (functionContext.BodyStatements.LastOrDefault() is not ReturnStatement && functionContext.BodyStatements.LastOrDefault() is not ErrorStatement)
         {
-            _asm.Xor(X86Register.edx, X86Register.edx); // zero out error
-            _asm.TeardownStackFrame();
+            _asm.Xor(Reg64.RDX, (RM64)Reg64.RDX); // zero out error
+            _asm.TearDownStackFrame();
             _asm.Return();
         }
         _asm.ExitFunction();
@@ -120,26 +108,26 @@ public class MineralCompiler
 
     private void Compile(ReturnStatement returnStatement)
     {
-        CompileToRegister(returnStatement.ValueToReturn, X86Register.eax);
-        _asm.Xor(X86Register.edx, X86Register.edx); // Zero out error before returning value
-        _asm.TeardownStackFrame();
+        CompileToRegister(returnStatement.ValueToReturn, Reg64.RAX);
+        _asm.Xor(Reg64.RDX, (RM64)Reg64.RDX); // Zero out error before returning value
+        _asm.TearDownStackFrame();
         _asm.Return();
     }
 
     private void Compile(ErrorStatement errorStatement)
     {
-        CompileToRegister(errorStatement.ErrorToReturn, X86Register.edx);
-        _asm.TeardownStackFrame();
+        CompileToRegister(errorStatement.ErrorToReturn, Reg64.RDX);
+        _asm.TearDownStackFrame();
         _asm.Return();
     }
 
     private void Compile(ConditionalStatement conditionalStatement)
     {
         var memoryLocation = CompileAndReturnAssignmentTargetFromLValue(conditionalStatement.ConditionalTarget);
-        if (memoryLocation != null) _asm.Mov(X86Register.edx, memoryLocation);
-        _asm.Test(X86Register.edx, X86Register.edx);
-        var endIfLabel = _asm.CreateUniqueLabel();
-        _asm.Jz(endIfLabel);
+        if (memoryLocation != null) _asm.Mov(Reg64.RDX, memoryLocation);
+        _asm.Test(Reg64.RDX, Reg64.RDX);
+        var endIfLabel = _asm.CreateUniqueLabel("C");
+        _asm.Jz(Rel32.Create(endIfLabel));
         foreach(var statment in conditionalStatement.ThenBlock)
             Compile(statment);
         _asm.Label(endIfLabel);
@@ -154,10 +142,10 @@ public class MineralCompiler
             CompileForError(callExpression);
         } else
         {
-            RegisterOffset? assignmentTarget = CompileAndReturnAssignmentTargetFromLValue(assignmentStatement.AssignmentTarget);
+            var assignmentTarget = CompileAndReturnAssignmentTargetFromLValue(assignmentStatement.AssignmentTarget);
             
             if (assignmentTarget != null) CompileAsAssignmentValue(assignmentTarget, assignmentStatement.Value);
-            else CompileToRegister(assignmentStatement.Value, X86Register.eax);
+            else CompileToRegister(assignmentStatement.Value, Reg64.RAX);
         }
             
 
@@ -167,7 +155,7 @@ public class MineralCompiler
         if (errorTarget != null)
         {
             var errorTargetMemoryLocation = CompileAndReturnAssignmentTargetFromLValue(errorTarget);
-            if (errorTargetMemoryLocation != null) _asm.Mov(errorTargetMemoryLocation, X86Register.edx);
+            if (errorTargetMemoryLocation != null) _asm.Mov(errorTargetMemoryLocation, Reg64.RDX);
             else
             {
                 // Pass for discard
@@ -176,7 +164,7 @@ public class MineralCompiler
 
     }
 
-    private RegisterOffset? CompileAndReturnAssignmentTargetFromLValue(LValue lValue)
+    private Mem64? CompileAndReturnAssignmentTargetFromLValue(LValue lValue)
     {
         if (lValue is IdentifierLValue identifierLValue)
         {
