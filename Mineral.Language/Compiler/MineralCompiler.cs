@@ -521,6 +521,98 @@ public class MineralCompiler
 
 
     #endregion
+
+    private void GatherMetadata(ExpressionBase expression)
+    {
+        switch (expression)
+        {
+            case BinaryExpression binaryExpression:
+                GatherMetadata(binaryExpression);
+                break;
+            case CallExpression callExpression:
+                GatherMetadata(callExpression);
+                break;
+            case IdentifierExpression identifierExpression:
+                GatherMetadata(identifierExpression);
+                break;
+            case LiteralExpression literalExpression:
+                GatherMetadata(literalExpression);
+                break;
+            case MemberAccessExpression memberAccessExpression:
+                GatherMetadata(memberAccessExpression);
+                break;
+            case ReferenceExpression referenceExpression:
+                GatherMetadata(referenceExpression);
+                break;
+            case StackAllocateExpression stackAllocateExpression:
+                GatherMetadata(stackAllocateExpression);
+                break;
+            default:
+                throw new InvalidOperationException($"Unknown expression type '{expression.GetType()}'");
+        }
+    }
+
+    private void GatherMetadata(BinaryExpression binaryExpression)
+    {
+        GatherMetadata(binaryExpression.Left);
+        GatherMetadata(binaryExpression.Right);
+        if (binaryExpression.Left.Metadata.SU == binaryExpression.Right.Metadata.SU)
+        {
+            binaryExpression.Metadata.SU = binaryExpression.Left.Metadata.SU + 1;
+        }
+        else
+        {
+            binaryExpression.Metadata.SU = Math.Max(binaryExpression.Left.Metadata.SU, binaryExpression.Right.Metadata.SU);
+        }
+        binaryExpression.Metadata.ContainsCall = binaryExpression.Left.Metadata.ContainsCall || binaryExpression.Right.Metadata.ContainsCall;
+    }
+
+    private void GatherMetadata(CallExpression callExpression)
+    {
+        foreach (var argument in callExpression.Arguments)
+        {
+            GatherMetadata(argument);
+        }
+        callExpression.Metadata.SU = 4;
+        callExpression.Metadata.ContainsCall = true;
+    }
+
+    private void GatherMetadata(IdentifierExpression identifierExpression)
+    {
+        identifierExpression.Metadata.SU = 0;
+    }
+
+    private void GatherMetadata(LiteralExpression literalExpression)
+    {
+        literalExpression.Metadata.SU = 1;
+    }
+
+    private void GatherMetadata(MemberAccessExpression memberAccessExpression)
+    {
+        GatherMetadata(memberAccessExpression.Instance);
+        memberAccessExpression.Metadata.SU = memberAccessExpression.Instance.Metadata.SU;
+        memberAccessExpression.Metadata.ContainsCall = memberAccessExpression.Instance.Metadata.ContainsCall;
+    }
+
+    private void GatherMetadata(ReferenceExpression referenceExpression)
+    {
+        if (referenceExpression.Instance != null)
+        {
+            GatherMetadata(referenceExpression.Instance);
+            referenceExpression.Metadata.SU = referenceExpression.Instance.Metadata.SU;
+            referenceExpression.Metadata.ContainsCall = referenceExpression.Instance.Metadata.ContainsCall;
+        }
+        else
+        {
+            referenceExpression.Metadata.SU = 1;
+        }
+    }
+
+    private void GatherMetadata(StackAllocateExpression stackAllocateExpression)
+    {
+        // Pass 
+        // Stack allocation should not occur naturally in expression trees
+    }
 }
 
 

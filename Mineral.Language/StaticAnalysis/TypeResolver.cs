@@ -339,6 +339,9 @@ public class TypeResolver
             case ConditionalStatement conditionalStatement:
                 Resolve(errors, module, context, conditionalStatement);
                 break;
+            case WhileStatement whileStatement:
+                Resolve(errors, module, context, whileStatement);
+                break;
             case AssignmentStatement assignmentStatement:
                 Resolve(errors, module, context, assignmentStatement);
                 break;
@@ -370,23 +373,28 @@ public class TypeResolver
 
     public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, ConditionalStatement conditionalStatement)
     {
-        ConcreteType conditionType;
-        if (conditionalStatement.ConditionalTarget is DiscardLValue)
-        {
-            // Pass
-            conditionType = new ConcreteType(BuiltinType.Int); // fake that this case is testable
-            // TODO: fully define functionality and meaning of discard conditional. For now, it will
-            // mean test the last error that occured
-        }
-        else
-        {
-            ResolveLValue(errors, module, context, conditionalStatement.ConditionalTarget);
-            conditionType = conditionalStatement.ConditionalTarget.ConcreteType;
-        }
-        foreach (var statement in conditionalStatement.ThenBlock) Resolve(errors, module, context, statement); // TODO Encountered return?
+        Resolve(errors, module, context, conditionalStatement.ConditionalTarget);
+
+        ConcreteType conditionType = conditionalStatement.ConditionalTarget.ConcreteType;
+
+        foreach (var statement in conditionalStatement.ThenBlock) Resolve(errors, module, context, statement); // TODO Branched return detection
+        foreach (var statement in conditionalStatement.ElseBlock) Resolve(errors, module, context, statement); 
         if (!conditionType.IsConditionalTestable())
         {
             errors.Add(conditionalStatement.ConditionalTarget, $"Cannot use type '{conditionType}' as a conditional test");
+        }
+    }
+
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, WhileStatement whileStatement)
+    {
+        Resolve(errors, module, context, whileStatement.ConditionalTarget);
+
+        ConcreteType conditionType = whileStatement.ConditionalTarget.ConcreteType;
+
+        foreach (var statement in whileStatement.ThenBlock) Resolve(errors, module, context, statement); // TODO Branched return detection
+        if (!conditionType.IsConditionalTestable())
+        {
+            errors.Add(whileStatement.ConditionalTarget, $"Cannot use type '{conditionType}' as a conditional test in loop");
         }
     }
 
@@ -561,6 +569,19 @@ public class TypeResolver
 
     }
 
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, BinaryExpression binaryExpression)
+    {
+        Resolve(errors, module, context, binaryExpression.Left);
+        Resolve(errors, module, context, binaryExpression.Right);
+        if (!binaryExpression.Left.ConcreteType.TryGetResultingTypeFromOperation(binaryExpression.Right.ConcreteType, binaryExpression.Operator, out var resultingType))
+        {
+            errors.Add(binaryExpression, $"cannot perform operation {binaryExpression.Operator} on types '{binaryExpression.Left.ConcreteType}' and '{binaryExpression.Right.ConcreteType}'");
+            return;
+        }
+        binaryExpression.TagAsType(resultingType);
+
+
+    }
 
     public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, CallExpression callExpression)
     {
@@ -711,6 +732,7 @@ public class TypeResolver
                 return;
             }
             referenceExpression.TagAsType(new ReferenceType(foundMember.FieldType));
+
             return;
         }
 
@@ -996,6 +1018,7 @@ public class FunctionContext
         return false;
     }
 }
+
 
 public class FunctionKey
 {

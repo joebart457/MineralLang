@@ -5,7 +5,7 @@ using System.Text;
 
 namespace Mineral.Language.Expressions;
 
-public class StackAllocateExpression: ExpressionBase
+public class StackAllocateExpression: ExpressionBase // Not an operable expression
 {
     public StackAllocateExpression(TypeSymbol typeToAllocate)
     {

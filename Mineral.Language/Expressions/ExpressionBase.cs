@@ -6,15 +6,23 @@ namespace Mineral.Language.Expressions;
 public class ExpressionBase
 {
     protected ConcreteType? _type = null;
-
+    public CompilerMetadata Metadata { get; protected set; } = new();
 
     public void TagAsType(ConcreteType type)
     {
-        _type = type; 
+        _type = type;
     }
 
     public ConcreteType ConcreteType => _type ?? NativeTypes.Void;
 
+
     public Location Start { get; set; } = Location.Zero;
     public Location End { get; set; } = Location.Zero;
+}
+
+public class CompilerMetadata
+{
+    public int SU { get; set; } // Sethi-Ullman number for minimal register spills
+    public bool ContainsCall { get; set; }
+
 }

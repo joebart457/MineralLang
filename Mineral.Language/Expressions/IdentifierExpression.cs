@@ -3,7 +3,7 @@ using Tokenizer.Core.Models;
 
 namespace Mineral.Language.Expressions;
 
-public class IdentifierExpression: ExpressionBase
+public class IdentifierExpression: OperableExpresson
 {
     public Token Symbol { get; set; }
 

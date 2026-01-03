@@ -2,7 +2,7 @@
 
 namespace Mineral.Language.Expressions;
 
-public class CallExpression: ExpressionBase
+public class CallExpression: OperableExpresson
 {
     public CallExpression(ExpressionBase callee, List<ExpressionBase> arguments)
     {

@@ -2,7 +2,7 @@
 
 namespace Mineral.Language.Expressions;
 
-public class MemberAccessExpression: ExpressionBase
+public class MemberAccessExpression: OperableExpresson
 {
     public MemberAccessExpression(ExpressionBase instance, Token memberToAccess)
     {

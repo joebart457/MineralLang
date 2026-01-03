@@ -162,4 +162,47 @@ internal static class TypeExtensions
         errors.Add(memberName, $"Cannot access member '{memberName.Lexeme}' of non-struct type '{concreteType}'");
         return false;
     }
+
+    public static bool TryGetResultingTypeFromOperation(this ConcreteType left, ConcreteType right, OperatorType op, out ConcreteType resultType)
+    {
+        resultType = NativeTypes.Void;
+        switch (op)
+        {
+            case OperatorType.Addition:
+            case OperatorType.Subtraction:
+            case OperatorType.Multiplication:
+            case OperatorType.Division: 
+            {
+                resultType = left;
+                return left.IsNumericType() && left.IsEqualTo(right);
+            }
+            case OperatorType.Modulus:
+                {
+                    resultType = NativeTypes.Int;
+                    return left.IsEqualTo(NativeTypes.Int) && left.IsEqualTo(right);
+                }
+            case OperatorType.Equality:
+            case OperatorType.NotEqual:
+            {
+                resultType = NativeTypes.Int;
+                return left.IsAssignableFrom(right) && (left.IsConditionalTestable() || (left.GetType() == typeof(ConcreteType) && left.BuiltinType == BuiltinType.Float));
+            }
+            case OperatorType.GreaterThan:
+            case OperatorType.LessThan:
+            case OperatorType.GreaterThanOrEqual:
+            case OperatorType.LessThanOrEqual:
+            {
+                resultType = NativeTypes.Int;
+                return left.IsNumericType() && left.IsEqualTo(right);
+            }
+            default:
+                return false;
+        }
+
+    }
+
+    public static bool IsNumericType(this ConcreteType type)
+    {
+        return type.GetType() == typeof(ConcreteType) && (type.BuiltinType == BuiltinType.Int || type.BuiltinType == BuiltinType.Float);
+    }
 }

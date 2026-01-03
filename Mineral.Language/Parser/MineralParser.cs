@@ -203,40 +203,38 @@ public class MineralParser: TokenParser
         var start = Current().Start;
         if (AdvanceIfMatch(TokenTypes.Error)) statement = ParseError();
         else if (AdvanceIfMatch(TokenTypes.Return)) statement = ParseReturn();
+        else if (AdvanceIfMatch(TokenTypes.While)) statement = ParseWhile();
         else  statement = ParseAssignmentOrConditional();
         statement.Start = start;
         statement.End = Previous().End;
         return statement;
     }
 
+    private WhileStatement ParseWhile()
+    {
+        var condition = ParseConditionalExpression();
+        var thenBlock = ParseBlock();
+        return new WhileStatement(condition, thenBlock);
+    }
+
     private StatementBase ParseAssignmentOrConditional()
     {
-        var lValue = ParseLValue();
+        var potentialLValue = ParseConditionalExpression();
         if (AdvanceIfMatch(TokenTypes.QuestionMark))
         {
-       
-            var thenBlock = new List<StatementBase>();
-            if (AdvanceIfMatch(TokenTypes.LCurly))
+
+            var thenBlock = ParseBlock();
+            var elseBlock = new List<StatementBase>();
+            if (AdvanceIfMatch(TokenTypes.Else))
             {
-                do
-                {
-                    DoWithSeek(TokenTypes.Semicolon, () =>
-                    {
-                        var statement = ParseStatement();
-                        thenBlock.Add(statement);
-                    });
-                } while (AdvanceIfMatch(TokenTypes.Semicolon));
-                Consume(TokenTypes.RCurly, "expect enclosing '}' in block");
+                elseBlock = ParseBlock();
             }
-            else
-            {
-                var statement = ParseStatement();
-                thenBlock.Add(statement);
-            }
-            return new ConditionalStatement(lValue, thenBlock);  
+            return new ConditionalStatement(potentialLValue, thenBlock, elseBlock);  
         }
 
-        var assignmentTarget = lValue;
+        if (!TryConvertToLValue(potentialLValue, out var assignmentTarget))
+            throw new ParsingException(Previous(), $"invalid lvalue (expression type {potentialLValue.GetType()})");
+
         LValue? errorTarget = null;
         if (AdvanceIfMatch(TokenTypes.Comma))
         {
@@ -247,6 +245,46 @@ public class MineralParser: TokenParser
         var value = ParseExpression();
         Consume(TokenTypes.Semicolon, "expect statement to end with ';'");
         return new AssignmentStatement(assignmentTarget, errorTarget, value);
+    }
+
+    private bool TryConvertToLValue(ExpressionBase expression, out LValue lvalue)
+    {
+        lvalue = new DiscardLValue(Previous()); 
+        if (expression is MemberAccessExpression memberAccessExpression)
+        {
+            if (!TryConvertToLValue(memberAccessExpression.Instance, out var instanceAsLValue)) return false;
+            lvalue = new InstanceMemberLValue(instanceAsLValue, memberAccessExpression.MemberToAccess);
+            return true;
+        }
+        if (expression is IdentifierExpression identifierExpression)
+        {
+            lvalue = new IdentifierLValue(identifierExpression.Symbol);
+            return true;
+        }
+        return false;
+    }
+
+    private List<StatementBase> ParseBlock()
+    {
+        var block = new List<StatementBase>();
+        if (AdvanceIfMatch(TokenTypes.LCurly))
+        {
+            do
+            {
+                DoWithSeek(TokenTypes.Semicolon, () =>
+                {
+                    var statement = ParseStatement();
+                    block.Add(statement);
+                });
+            } while (AdvanceIfMatch(TokenTypes.Semicolon));
+            Consume(TokenTypes.RCurly, "expect enclosing '}' in block");
+        }
+        else
+        {
+            var statement = ParseStatement();
+            block.Add(statement);
+        }
+        return block;
     }
 
     private ErrorStatement ParseError()
@@ -284,13 +322,36 @@ public class MineralParser: TokenParser
         return expression;
     }
 
+    private ConditionalExpression ParseConditionalExpression()
+    {
+        var lhs = ParseGetOrCallExpression();
+        if (AdvanceIfMatchOperator(out var op))
+        {
+            var rhs = ParseGetOrCallExpression();
+            return new BinaryExpression(lhs, rhs, op);
+        }
+        return lhs;
+    }
+
+
+    private bool AdvanceIfMatchOperator(out OperatorType op) 
+    {
+        var tokenType = Current().Type;
+        if (Enum.TryParse(tokenType, false, out op))
+        {
+            Advance();
+            return true;
+        }
+        return false;
+    }
+
     private ExpressionBase ParseStackAllocate()
     {
         var typeToAllocate = ParseTypeSymbol();
         return new StackAllocateExpression(typeToAllocate);
     }
 
-    private ExpressionBase ParseGetOrCallExpression()
+    private OperableExpresson ParseGetOrCallExpression()
     {
         var lhs = ParseIdentifier();
         var arguments = new List<ExpressionBase>();
@@ -322,7 +383,7 @@ public class MineralParser: TokenParser
         return lhs;
     }
 
-    private ExpressionBase ParseIdentifier()
+    private OperableExpresson ParseIdentifier()
     {
         if (AdvanceIfMatch(TokenTypes.Word))
         {
@@ -332,7 +393,7 @@ public class MineralParser: TokenParser
         return ParseLiteralExpression();
     }
 
-    private ExpressionBase ParseLiteralExpression()
+    private OperableExpresson ParseLiteralExpression()
     {
         if (AdvanceIfMatch(TokenTypes.Integer))
         {

@@ -15,7 +15,7 @@ public enum BuiltinType
 public static class NativeTypes
 {
 
-
+    public static readonly ConcreteType Int = new ConcreteType(BuiltinType.Int);
     public static readonly ConcreteType Void = new ConcreteType(BuiltinType.Void);
     public static readonly ConcreteType Error = new ConcreteType(BuiltinType.String);
 }

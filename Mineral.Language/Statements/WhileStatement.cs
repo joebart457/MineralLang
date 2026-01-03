@@ -1,17 +1,18 @@
 ﻿using Mineral.Language.Expressions;
+using System;
+using System.Collections.Generic;
+using System.Text;
 
 namespace Mineral.Language.Statements;
 
-public class ConditionalStatement: StatementBase
+public class WhileStatement : StatementBase
 {
-    public ConditionalStatement(ConditionalExpression conditionalTarget, List<StatementBase> thenBlock, List<StatementBase> elseBlock)
+    public WhileStatement(ConditionalExpression conditionalTarget, List<StatementBase> thenBlock)
     {
         ConditionalTarget = conditionalTarget;
         ThenBlock = thenBlock;
-        ElseBlock = elseBlock;
     }
 
     public ConditionalExpression ConditionalTarget { get; set; }
     public List<StatementBase> ThenBlock { get; set; }
-    public List<StatementBase> ElseBlock { get; set; }
 }

@@ -14,7 +14,18 @@ type Test{
 pub func main() int {
 	x = stackalloc Test;
 	x.message = "Hello There!";
-	_ = io.log(x.message, 4);
+	_ = io.log(x.message, 12);
+
+	x.message.length < 4? {
+	
+	} else {
+	
+	
+	}
+
+	while x < 9 {
+		
+	}
 	return 0; 
 }
 

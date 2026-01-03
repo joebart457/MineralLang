@@ -1,10 +1,7 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-
+﻿
 namespace Mineral.Language.Expressions;
 
-public class LiteralExpression: ExpressionBase
+public class LiteralExpression: OperableExpresson
 {
     public object? Value { get; set; }
 

@@ -21,6 +21,19 @@ public static class TokenTypes
     public const string Dot = "Dot";
     public const string Discard = "Discard";
 
+    // Operators
+    public const string Addition = "Addition";
+    public const string Subtraction = "Subtraction";
+    public const string Multiplication = "Multiplication";
+    public const string Division = "Division";
+    public const string Modulus = "Modulus";
+    public const string Equality = "Equality";
+    public const string NotEqual = "NotEqual";
+    public const string GreaterThan = "GreaterThan";
+    public const string LessThan = "LessThan";
+    public const string GreaterThanOrEqual = "GreaterThanOrEqual";
+    public const string LessThanOrEqual = "LessThanOrEqual";
+
     // Native types
     public const string ReferenceType = "ReferenceType";
 
@@ -33,6 +46,8 @@ public static class TokenTypes
     public const string Error = "Error";
     public const string Return = "Return";
     public const string StackAllocate = "StackAllocate";
+    public const string Else = "Else";
+    public const string While = "While";
 
     public const string Null = "Null";
 
@@ -69,6 +84,20 @@ public static class TokenizerFactory
             new(TokenTypes.Dot, "."),
             new(TokenTypes.Discard, "_"),
 
+            // Operators
+            new(TokenTypes.Addition, "+"),
+            new(TokenTypes.Subtraction, "-"),
+            new(TokenTypes.Multiplication, "*"),
+            new(TokenTypes.Division, "/"),
+            new(TokenTypes.Modulus, "%"),
+            new(TokenTypes.Equality, "=="),
+            new(TokenTypes.NotEqual, "!="),
+            new(TokenTypes.LessThan, "<"),
+            new(TokenTypes.LessThanOrEqual, "<="),
+            new(TokenTypes.GreaterThan, ">"),
+            new(TokenTypes.GreaterThanOrEqual, ">="),
+
+
             new(TokenTypes.ReferenceType, "ref"),
 
             new(TokenTypes.Module, "module"),
@@ -79,6 +108,9 @@ public static class TokenizerFactory
             new(TokenTypes.Error, "error"),
             new(TokenTypes.Return, "return"),
             new(TokenTypes.StackAllocate, "stackalloc"),
+            new(TokenTypes.Else, "else"),
+            new(TokenTypes.While, "while"),
+
             new(TokenTypes.Null, "null"),
 
             new(TokenTypes.String, "\"", enclosingLeft: "\"", enclosingRight: "\""),
