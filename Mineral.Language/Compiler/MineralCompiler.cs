@@ -4,6 +4,7 @@ using Mineral.Language.LValues;
 using Mineral.Language.Statements;
 using Mineral.Language.StaticAnalysis;
 using System.Runtime.InteropServices;
+using Tokenizer.Core.Models;
 using X86_64Assembler;
 
 
@@ -63,11 +64,34 @@ public class MineralCompiler
         }
     }
 
+    private int _stackSlotIndex = 0;
+    private Mem64 NextAvailableLocalStackSlot()
+    {
+        var mem = _asm.GetIdentifierOffset($"%__iterm{_stackSlotIndex}", out _);
+        _stackSlotIndex++;
+        return mem;
+    }
+
+    private void FreeLastStackSlot()
+    {
+        // Frees the most recently used stack slot
+        _stackSlotIndex--;
+        if (_stackSlotIndex < 0) throw new InvalidOperationException("stack slot index went below zero");
+    }
+
     private void CompileFunction(FunctionContext functionContext)
     {
+        _stackSlotIndex = 0;
         if (functionContext.IsImported) return; 
         var parameters = functionContext.Parameters.Select(kv => new X86FunctionLocalData(kv.Key.Lexeme, kv.Value.GetStackSize())).ToList();
         var localVariables = functionContext.LocalVariables.Select(kv => new X86FunctionLocalData(kv.Key.Lexeme, kv.Value.GetStackSize())).ToList();
+
+        var additonalStackSlotsNeeded = GetAdditonalStackSlotsNeeded(functionContext);
+        for (int i = 0; i < additonalStackSlotsNeeded; i++)
+        {
+            localVariables.Add(new X86FunctionLocalData($"%__iterm{i}", 8));
+        }
+
         var function = new X86Function(CallingConvention.StdCall, functionContext.GetFunctionSignature(), parameters, localVariables, false, ""); // TODO: Exports
         _asm.EnterFunction(function);
 
@@ -83,6 +107,327 @@ public class MineralCompiler
             _asm.Return();
         }
         _asm.ExitFunction();
+    }
+
+
+    #region Happy path expression compilation
+
+    private RM Compile(ExpressionBase expression)
+    {
+        switch (expression)
+        {
+            case CallExpression callExpression:
+                return Compile(callExpression);
+            case IdentifierExpression identifierExpression:
+                return Compile(identifierExpression);
+            case MemberAccessExpression memberAccessExpression:
+                return Compile(memberAccessExpression);
+            case LiteralExpression literalExpression:
+                return Compile(literalExpression);
+            default:
+                throw new InvalidOperationException($"Unknown expression type '{expression.GetType()}'");
+        }
+    }
+    private Mem64 Compile(IdentifierExpression identifierExpression)
+    {
+        return _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _);
+    }
+
+    private Mem64 Compile(MemberAccessExpression memberAccessExpression)
+    {
+        var instanceLocation = Compile(memberAccessExpression.Instance);
+        if (!memberAccessExpression.Instance.ConcreteType.TryGetMemberOffsetFromStructOrReference(memberAccessExpression.MemberToAccess, out var isReferenceType, out var offset))
+            throw new InvalidOperationException($"expect left hand side of member access to be struct type but got '{memberAccessExpression.Instance.ConcreteType}' or type '{memberAccessExpression.Instance.ConcreteType}' does not contain member '{memberAccessExpression.MemberToAccess.Lexeme}'");
+        if (!isReferenceType)
+        {
+            return HandleRM(instanceLocation,
+                mem =>
+                {
+                    return Mem64.Create((Reg64)mem.Register, mem.Displacement.Offset + offset);
+                },
+                reg =>
+                {
+                    throw new Exception("cannot return struct in register");
+                });
+        }
+        return HandleRM(instanceLocation,
+                mem =>
+                {
+                    _asm.Mov(Reg64.RAX, mem); 
+                    return Mem64.Create(Reg64.RAX, offset);
+                },
+                reg =>
+                {
+                    return Mem64.Create(reg, offset);
+                });
+    }
+
+    private Reg64 Compile(ReferenceExpression referenceExpression)
+    {
+        if (referenceExpression.Instance == null)
+        {
+            var location = _asm.GetIdentifierOffset(referenceExpression.MemberToAccess.Lexeme, out _);
+            _asm.Lea(Reg64.RAX, location);
+            return Reg64.RAX;
+        }
+        var rm = Compile(referenceExpression.Instance);
+        if (!referenceExpression.Instance.ConcreteType.TryGetMemberOffsetFromStructOrReference(referenceExpression.MemberToAccess, out var isReferenceType, out var offset))
+            throw new InvalidOperationException($"expect left hand side of member access to be struct type but got '{referenceExpression.Instance.ConcreteType}' or type '{referenceExpression.Instance.ConcreteType}' does not contain member '{referenceExpression.MemberToAccess.Lexeme}'");
+        if (!isReferenceType)
+        {
+            return HandleRM(rm,
+                mem =>
+                {
+                    _asm.Lea(Reg64.RAX, Mem64.Create((Reg64)mem.Register, mem.Displacement.Offset + offset));
+                    return Reg64.RAX;
+                },
+                reg =>
+                {
+                    throw new Exception("cannot return struct in register");
+                });
+        }
+        return HandleRM(rm,
+                mem =>
+                {
+                    _asm.Mov(Reg64.RAX, mem); 
+                    _asm.Lea(Reg64.RAX, Mem64.Create(Reg64.RAX, offset));
+                    return Reg64.RAX;
+                },
+                reg =>
+                {
+                    _asm.Lea(Reg64.RAX, Mem64.Create(reg, offset));
+                    return Reg64.RAX;
+                });
+    }
+
+    private RM Compile(BinaryExpression binaryExpression)
+    {
+        var rmLeft = Compile(binaryExpression.Left);
+        if (binaryExpression.Right.Metadata.ContainsCall)
+        {
+            var intermStackSlot = NextAvailableLocalStackSlot();
+            HandleRM(rmLeft,
+                mem =>
+                {
+                    _asm.Mov(Reg64.RAX, mem);
+                    _asm.Mov(intermStackSlot, Reg64.RAX);
+                },
+                reg =>
+                {
+                    _asm.Mov(intermStackSlot, reg);
+                },
+                xmm =>
+                {
+                    _asm.Movss(intermStackSlot, xmm);
+                });
+
+            var rmRight = Compile(binaryExpression.Right);
+
+
+        }
+    }
+
+    private void HandleOperation(RM left, RM right, OperatorType op)
+    {
+        if (left is Reg64 regLeft && right is Reg64 regRight)
+        {
+
+        }
+    }
+
+    private void HandleOperation(Reg64 left, Reg64 right, OperatorType op)
+    {
+
+    }
+
+    private Reg64 HandleOperation(Reg64 left, Mem64 right, OperatorType op)
+    {
+        if (op == OperatorType.Addition)
+        {
+            _asm.Add(left, right);
+        }
+        else if (op == OperatorType.Subtraction)
+        {
+            _asm.Sub(left, right);
+        }
+        else if (op == OperatorType.Multiplication)
+        {
+            _asm.Imul(left, right);
+        }
+        else if (op == OperatorType.Division || op == OperatorType.Modulus)
+        {
+            if (left != Reg64.RAX) _asm.Mov(Reg64.RAX, (RM64)left);
+            _asm.Cqo();
+            _asm.Div((RM64)right);
+            return op == OperatorType.Division ? Reg64.RAX : Reg64.RDX;
+        }
+
+
+    }
+    private void HandleOperation(Reg64 left, Xmm128 right, OperatorType op)
+    {
+
+    }
+
+
+    private void HandleOperation(Mem64 left, Reg64 right, OperatorType op)
+    {
+
+    }
+
+    private void HandleOperation(Mem64 left, Mem64 right, OperatorType op)
+    {
+
+    }
+
+    private void HandleOperation(Mem64 left, Xmm128 right, OperatorType op)
+    {
+
+    }
+
+    private void HandleOperation(Xmm128 left, Reg64 right, OperatorType op)
+    {
+
+    }
+
+    private void HandleOperation(Xmm128 left, Mem64 right, OperatorType op)
+    {
+
+    }
+
+    private void HandleOperation(Xmm128 left, Xmm128 right, OperatorType op)
+    {
+
+    }
+
+
+    private RM Compile(CallExpression callExpression)
+    {
+        // Will always return in RAX or Xmm0
+
+        // align stack
+
+        // if argument count is odd and greather than 4, we need to subtract an additional 8 bytes from RSP to keep RSP 16 byte aligned
+        var additionalStackToSubtract = 0;
+        if (callExpression.Arguments.Count < 4) additionalStackToSubtract += (4 - callExpression.Arguments.Count) * 8;
+        else if (callExpression.Arguments.Count > 4 && ((callExpression.Arguments.Count % 2) == 1)) additionalStackToSubtract = 8;
+        if (additionalStackToSubtract > 0)
+        {
+            _asm.Sub(Reg64.RSP, additionalStackToSubtract); // align stack to 16 byte boundary
+        }
+
+        for (int i = callExpression.Arguments.Count - 1; i >= 0; i--)
+            {
+                var argument = callExpression.Arguments[i];
+                CompileAsArgument(argument);
+            }
+        if (callExpression.FunctionContext != null)
+        {
+            if (callExpression.FunctionContext.IsImported)
+            {
+                // imported function call
+                for (int i = 0; i < callExpression.Arguments.Count; i++)
+                {
+                    var argument = callExpression.Arguments[i];
+                    var mem = Mem64.Create(Reg64.RSP, i * 8); // RSP points directly at last pushed value, so first arg should be at offset 0 from rsp
+                    if (argument.IsFloatingPointType())
+                    {
+                        _asm.Movss(SelectXmmRegister(i), mem);
+                    }
+                    // TODO add double precision support
+                    else
+                    {
+                        _asm.Mov(SelectGeneralRegister(i), mem);
+                    }
+                }
+                _asm.Call((RM64)Mem64.Create(callExpression.FunctionContext.GetDecoratedFunctionLabel()));
+            }
+            // it is a direct call
+            else _asm.Call(Rel32.Create(callExpression.FunctionContext.GetDecoratedFunctionLabel()));
+        }
+        else
+        {
+            // Indirect call
+            var indirect = Compile(callExpression.Callee);
+            if (indirect is RM64 rm)
+            {
+                _asm.Call(rm);
+            }
+            else throw new InvalidOperationException($"unexpected rm type in call. rm type was '{indirect.GetType()}'");
+        }
+        _asm.Add(Reg64.RSP, (callExpression.Arguments.Count * 8) + additionalStackToSubtract); // clear stack of arguments
+        if (callExpression.IsFloatingPointType())
+        {
+            return Xmm128.XMM0;
+        }
+        return Reg64.RAX;
+    }
+
+    private Xmm128 SelectXmmRegister(int index)
+    {
+        switch (index)
+        {
+            case 0:
+                return Xmm128.XMM0;
+            case 1: return Xmm128.XMM1;
+            case 2: return Xmm128.XMM2;
+            case 3: return Xmm128.XMM3;
+            default:
+                throw new NotSupportedException($"xmm arguments not supported past parameter 4");
+        }
+    }
+
+    private Reg64 SelectGeneralRegister(int index)
+    {
+        // select register based on argument index according to windows x64 abi
+        switch (index)
+        {
+            case 0:
+                return Reg64.RCX;
+            case 1: return Reg64.RDX;
+            case 2: return Reg64.R8;
+            case 4: return Reg64.R9;
+            default:
+                throw new NotSupportedException("general register arguments not supported past parameter 4");
+        }
+    }
+
+    #endregion
+
+    private Mem64 HandleRM(RM rm, Func<Mem64, Mem64> handleMemory, Func<Reg64, Mem64> handleRegister, Func<Xmm128, Mem64>? handleXmm)
+    {
+        if (rm is Reg64 reg)
+            return handleRegister(reg);
+        else if (rm is Mem64 mem)
+            return handleMemory(mem);
+        else if (handleXmm != null && rm is Xmm128 xmm)
+            return handleXmm(xmm);
+        else
+            throw new InvalidOperationException($"unexpected RM type '{rm.GetType()}'");
+    }
+
+    private Reg64 HandleRM(RM rm, Func<Mem64, Reg64> handleMemory, Func<Reg64, Reg64> handleRegister, Func<Xmm128, Reg64>? handleXmm)
+    {
+        if (rm is Reg64 reg)
+            return handleRegister(reg);
+        else if (rm is Mem64 mem)
+            return handleMemory(mem);
+        else if (handleXmm != null && rm is Xmm128 xmm)
+            return handleXmm(xmm);
+        else
+            throw new InvalidOperationException($"unexpected RM type '{rm.GetType()}'");
+    }
+
+    private void HandleRM(RM rm, Action<Mem64> handleMemory, Action<Reg64> handleRegister, Action<Xmm128>? handleXmm)
+    {
+        if (rm is Reg64 reg)
+            handleRegister(reg);
+        else if (rm is Mem64 mem)
+            handleMemory(mem);
+        else if (handleXmm != null && rm is Xmm128 xmm)
+            handleXmm(xmm);
+        else
+            throw new InvalidOperationException($"unexpected RM type '{rm.GetType()}'");
     }
 
     private void Compile(StatementBase statement)
@@ -196,12 +541,6 @@ public class MineralCompiler
         else throw new NotSupportedException($"lvalue of type '{lValue.GetType()}' is not a supported assignment target");
     }
 
-    private void Compile(ExpressionBase expression)
-    {
-        // all expressions end up with their returned value in eax
-        CompileToRegister(expression, X86Register.eax);
-        
-    }
 
     private void CompileForError(CallExpression callExpression)
     {
@@ -522,6 +861,466 @@ public class MineralCompiler
 
     #endregion
 
+
+    #region Expressions
+
+    private RM CompileToPreferred(ExpressionBase expression, RM preferred)
+    {
+        switch (expression)
+        {
+            case BinaryExpression binaryExpression:
+                CompileToPreferred(binaryExpression, preferred);
+                break;
+            case CallExpression callExpression:
+                CompileToPreferred(callExpression, preferred);
+                break;
+            case IdentifierExpression identifierExpression:
+                CompileToPreferred(identifierExpression, preferred);
+                break;
+            case MemberAccessExpression memberAccessExpression:
+                CompileToPreferred(memberAccessExpression, preferred);
+                break;
+            case LiteralExpression literalExpression:
+                CompileToPreferred(literalExpression, preferred);
+                break;
+            case ReferenceExpression referenceExpression:
+                CompileToPreferred(referenceExpression, preferred);
+                break;
+            default:
+                throw new InvalidOperationException($"Unknown expression type '{expression.GetType()}'");
+        }
+    }
+
+    private RM CompileToPreferred(BinaryExpression binaryExpression, RM preferred)
+    {
+        RM first;
+        RM second;
+        if (binaryExpression.Operator == OperatorType.Division && binaryExpression.IsIntegerType())
+        {
+            preferred = Reg64.RAX;
+        }
+        if (binaryExpression.Left.Metadata.SU >= binaryExpression.Right.Metadata.SU)
+        {
+            first = CompileToPreferred(binaryExpression.Left, preferred);
+            second = CompileToPreferred(binaryExpression.Right, );
+
+        }
+    }
+
+    private RM CompileToPreferred(CallExpression callExpression, RM preferred)
+    {
+        // TODO
+    }
+
+    private RM CompileToPreferred(IdentifierExpression identifierExpression, RM preferred)
+    {
+        // TODO
+    }
+
+    private RM CompileToPreferred(MemberAccessExpression memberAccessExpression, RM preferred)
+    {
+        // TODO
+    }
+
+    private RM CompileToPreferred(LiteralExpression literalExpression, RM preferred)
+    {
+        // TODO
+    }
+
+    private RM CompileToPreferred(ReferenceExpression referenceExpression, RM preferred)
+    {
+        // TODO
+    }
+
+
+    private RM CompileToMemory(ExpressionBase expression)
+    {
+        switch (expression)
+        {
+            case BinaryExpression binaryExpression:
+                CompileToMemory(binaryExpression);
+                break;
+            case CallExpression callExpression:
+                CompileToMemory(callExpression);
+                break;
+            case IdentifierExpression identifierExpression:
+                CompileToMemory(identifierExpression);
+                break;
+            case MemberAccessExpression memberAccessExpression:
+                CompileToMemory(memberAccessExpression);
+                break;
+            case LiteralExpression literalExpression:
+                CompileToMemory(literalExpression);
+                break;
+            case ReferenceExpression referenceExpression:
+                CompileToMemory(referenceExpression);
+                break;
+            default:
+                throw new InvalidOperationException($"Unknown expression type '{expression.GetType()}'");
+        }
+    }
+
+    private RM CompileToMemory(BinaryExpression binaryExpression)
+    {
+        RM first;
+        RM second;
+        if (binaryExpression.Operator == OperatorType.Division && binaryExpression.IsIntegerType())
+        {
+            preferred = Reg64.RAX;
+        }
+        if (binaryExpression.Left.Metadata.SU >= binaryExpression.Right.Metadata.SU)
+        {
+            first = CompileToMemory(binaryExpression.Left);
+            second = CompileToMemory(binaryExpression.Right, );
+
+        }
+    }
+
+    private RM CompileToMemory(CallExpression callExpression)
+    {
+        // TODO
+    }
+
+    private RM CompileToMemory(IdentifierExpression identifierExpression)
+    {
+        // TODO
+        return _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _);
+    }
+
+    private Mem64 CompileToMemory(MemberAccessExpression memberAccessExpression)
+    {
+        // TODO
+        var instanceLocation = CompileToMemory(memberAccessExpression.Instance);
+
+        if (!memberAccessExpression.Instance.ConcreteType.TryGetMemberOffsetFromStructOrReference(memberAccessExpression.MemberToAccess, out var isReferenceType, out var offset))
+            throw new InvalidOperationException($"expect left hand side of member access to be struct type but got '{memberAccessExpression.Instance.ConcreteType}' or type '{memberAccessExpression.Instance.ConcreteType}' does not contain member '{memberAccessExpression.MemberToAccess.Lexeme}'");
+        if (instanceLocation is Mem64 mem)
+        {
+            mem.Displacement.Offset += offset;
+            return mem;
+        }
+        if (instanceLocation is Reg64 reg)
+        {
+            _asm.Add(reg, offset);
+            return reg;
+        }
+        else
+            throw new InvalidOperationException("unexpected RM type for member access");
+    }
+
+    private RM CompileToMemory(LiteralExpression literalExpression)
+    {
+        // TODO
+    }
+
+
+    private Xmm128? Compile(CallExpression callExpression)
+    {
+
+
+        // Will always return in RAX or Xmm0
+    }
+
+    private Mem64 Compile(IdentifierExpression identifierExpression)
+    {
+        return _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _);
+    }
+
+    private Immediate Compile(LiteralExpression literalExpression)
+    {
+
+    }
+
+    private Mem64 Compile(MemberAccessExpression memberAccessExpression)
+    {
+
+    }
+
+    private RM Compile(BinaryExpression binaryExpression)
+    {
+
+
+        // result always in Reg64 or Xmm128
+    }
+
+
+    private Reg64 HandleReferenceExpression(CallExpression instance, ReferenceExpression referenceExpression)
+    {
+        Compile(instance);
+        if (instance.ConcreteType is ReferenceType referenceType && referenceType.ReferencedType is StructType structType)
+        {
+            if (!structType.TryGetMemberOffset(referenceExpression.MemberToAccess, out var offset))
+                throw new InvalidOperationException($"type '{structType}' does not contain member '{referenceExpression.MemberToAccess.Lexeme}'");
+            var freeRegister = GetFreeRegister();
+            _asm.Lea(freeRegister, Mem64.Create(Reg64.RAX, offset));
+            return freeRegister;
+        }
+        else throw new InvalidOperationException("expected reference type as left hand side of member");   
+    }
+
+    private Reg64 HandleReferenceExpression(MemberAccessExpression instance, ReferenceExpression referenceExpression)
+    {
+        var mem = CompileToMemory(instance);
+        
+        if (instance.ConcreteType is ReferenceType referenceType && referenceType.ReferencedType is StructType structType)
+        {
+            if (!structType.TryGetMemberOffset(referenceExpression.MemberToAccess, out var offset))
+                throw new InvalidOperationException($"type '{structType}' does not contain member '{referenceExpression.MemberToAccess.Lexeme}'");
+            var freeRegister = GetFreeRegister();
+            _asm.Lea(freeRegister, mem);
+            _asm.Add(freeRegister, offset);
+            return freeRegister;
+        }
+        else throw new InvalidOperationException("expected reference type as left hand side of member");
+    }
+
+    private Reg64 HandleReferenceExpression(IdentifierExpression instance, ReferenceExpression referenceExpression)
+    {
+        var mem = _asm.GetIdentifierOffset(instance.Symbol.Lexeme, out _);
+
+        if (instance.ConcreteType is ReferenceType referenceType && referenceType.ReferencedType is StructType structType)
+        {
+            if (!structType.TryGetMemberOffset(referenceExpression.MemberToAccess, out var offset))
+                throw new InvalidOperationException($"type '{structType}' does not contain member '{referenceExpression.MemberToAccess.Lexeme}'");
+            var freeRegister = GetFreeRegister();
+            _asm.Lea(freeRegister, mem);
+            _asm.Add(freeRegister, offset);
+            return freeRegister;
+        }
+        else throw new InvalidOperationException("expected reference type as left hand side of member");
+    }
+
+
+
+    private RM HandleBinary(CallExpression left, CallExpression right, OperatorType operatorType)
+    {
+        // TODO
+
+        if (operatorType == OperatorType.Division && left.IsIntegerType())
+        {
+            // division requires rax and rdx
+
+            Compile(right);
+            var preservedRegister = GetCalleePreservedRegister();
+            _asm.Mov((RM64)preservedRegister, Reg64.RAX);
+            Compile(left);
+            _asm.Cqo(); // sign extend rax into rdx:rax
+            _asm.Idiv(preservedRegister);
+            return Reg64.RAX;
+        }
+        if (operatorType == OperatorType.Modulus && left.IsIntegerType())
+        {
+            // division requires rax and rdx
+
+            Compile(right);
+            var preservedRegister = GetCalleePreservedRegister();
+            _asm.Mov((RM64)preservedRegister, Reg64.RAX);
+            Compile(left);
+            _asm.Cqo(); // sign extend rax into rdx:rax
+            _asm.Idiv(preservedRegister);
+            return Reg64.RDX; // Remainder is in rdx
+        }
+
+        Compile(left);
+        var callPreservedRegister = GetCalleePreservedRegister();
+        _asm.Mov((RM64)callPreservedRegister, Reg64.RAX);
+        Compile(right);
+        
+
+
+
+    }
+
+
+
+    // TODO handle constant folding in type resolver instead
+    //private Immediate HandleBinary(LiteralExpression left, LiteralExpression right, OperatorType operatorType)
+    //{
+    //    if (left.Value is int leftInt && right.Value is int rightInt)
+    //    {
+    //        switch (operatorType)
+    //        {
+    //            case OperatorType.Addition:
+    //                return new Imm32(leftInt + rightInt);
+    //            case OperatorType.Subtraction:
+    //                return new Imm32(leftInt - rightInt);
+    //            case OperatorType.Multiplication:
+    //                return new Imm32(leftInt * rightInt);
+    //            case OperatorType.Division:
+    //                return new Imm32(leftInt / rightInt);
+    //            default:
+    //                throw new InvalidOperationException($"unsupported operator type '{operatorType}' for integer literals");
+    //        }
+    //    }
+    //    else if (left.Value is float leftFloat && right.Value is float rightFloat)
+    //    {
+    //        switch (operatorType)
+    //        {
+    //            case OperatorType.Addition:
+    //                return new Imm32(leftFloat + rightFloat);
+    //            case OperatorType.Subtraction:
+    //                return new Imm32(leftFloat - rightFloat);
+    //            case OperatorType.Multiplication:
+    //                return new Imm32(leftFloat * rightFloat);
+    //            case OperatorType.Division:
+    //                return new Imm32(leftFloat / rightFloat);
+    //            default:
+    //                throw new InvalidOperationException($"unsupported operator type '{operatorType}' for float literals");
+    //        }
+    //    }
+    //    else
+    //        throw new InvalidOperationException("only integer literals are supported for constant folding");
+    //}
+
+    private Reg64 GetFreeRegister()
+    {
+
+    }
+
+    private Reg64 GetCalleePreservedRegister()
+    {
+
+    }
+
+    private List<Register> calleeSavedRegisters = new()
+    {
+        Reg64.RBX,
+        Reg64.RBP,
+        Reg64.R12,
+        Reg64.R13,
+        Reg64.R14,
+        Reg64.R15
+    };
+
+    private List<Register> callerSavedRegisters = new()
+    {
+        Reg64.RAX,
+        Reg64.RCX,
+        Reg64.RDX,
+        Reg64.RSI,
+        Reg64.RDI,
+        Reg64.R8,
+        Reg64.R9,
+        Reg64.R10,
+        Reg64.R11
+    };
+
+    private Register HandleAddition(RM dest, RM src)
+    {
+        if (dest is Reg64 destReg)
+        {
+            _asm.Add(destReg, ToRM64OrThrow(src));
+            return destReg;
+        }
+        else if (src is Reg64 srcReg)
+        {
+            _asm.Add(srcReg, ToRM64OrThrow(dest));
+            return srcReg;
+        }
+        else if (dest is Xmm128 destXmm)
+        {
+            _asm.Addsd(destXmm, ToRM64OrThrow(src));
+            return destXmm;
+        }
+        else if (src is Xmm128 srcXmm)
+        {
+            _asm.Addsd(srcXmm, ToRM64OrThrow(dest));
+            return srcXmm;
+        }
+        else
+            throw new InvalidOperationException("at least one operand must be a register for addition");
+    }
+
+    private RM64 ToRM64OrThrow(RM rm)
+    {
+        if (rm is RM64 rm64) return rm64;
+        throw new InvalidOperationException($"expected RM64 but got '{rm.GetType()}'");
+    }
+
+    #endregion
+
+    private int GetAdditonalStackSlotsNeeded(FunctionContext functionContext)
+    {
+        foreach (var statement in functionContext.BodyStatements)
+        {
+            GatherMetadata(statement);
+        }
+        return functionContext.BodyStatements.Max(s => s.Metadata.StackSlotsNeeded);
+    }
+
+    private void GatherMetadata(StatementBase statement)
+    {
+        switch (statement)
+        {
+            case WhileStatement whileStatement:
+                GatherMetadata(whileStatement);
+                break;
+            case AssignmentStatement assignmentStatement:
+                GatherMetadata(assignmentStatement);
+                break;
+            case ErrorStatement errorStatement:
+                GatherMetadata(errorStatement);
+                break;
+            case ReturnStatement returnStatement:
+                GatherMetadata(returnStatement);
+                break;
+            case ConditionalStatement ifStatement:
+                GatherMetadata(ifStatement);
+                break;
+            default:
+                throw new InvalidOperationException($"Unknown statement type '{statement.GetType()}'");
+        }
+    }
+
+    private void GatherMetadata(WhileStatement whileStatement)
+    {
+        GatherMetadata(whileStatement.ConditionalTarget);
+        whileStatement.Metadata.StackSlotsNeeded = whileStatement.ConditionalTarget.Metadata.StackSlotsNeeded;
+    }
+
+    private void GatherMetadata(AssignmentStatement assignmentStatement)
+    {
+        GatherMetadata(assignmentStatement.Value);
+        assignmentStatement.Metadata.StackSlotsNeeded = assignmentStatement.Value.Metadata.StackSlotsNeeded;
+    }
+
+    private void GatherMetadata(ErrorStatement errorStatement)
+    {
+        GatherMetadata(errorStatement.ErrorToReturn);
+        errorStatement.Metadata.StackSlotsNeeded = errorStatement.ErrorToReturn.Metadata.StackSlotsNeeded;
+    }
+
+    private void GatherMetadata(ReturnStatement returnStatement)
+    {
+        if (returnStatement.ValueToReturn == null)
+        {
+            returnStatement.Metadata.StackSlotsNeeded = 0;
+            return;
+        }
+        GatherMetadata(returnStatement.ValueToReturn);
+        returnStatement.Metadata.StackSlotsNeeded = returnStatement.ValueToReturn.Metadata.StackSlotsNeeded;
+    }
+
+    private void GatherMetadata(ConditionalStatement ifStatement)
+    {
+        GatherMetadata(ifStatement.ConditionalTarget);
+        int maxStackSlotsNeeded = ifStatement.ConditionalTarget.Metadata.StackSlotsNeeded;
+        foreach (var statment in ifStatement.ThenBlock)
+        {
+            GatherMetadata(statment);
+            maxStackSlotsNeeded = Math.Max(maxStackSlotsNeeded, statment.Metadata.StackSlotsNeeded);
+        }
+        if (ifStatement.ElseBlock != null)
+        {
+            foreach (var statment in ifStatement.ElseBlock)
+            {
+                GatherMetadata(statment);
+                maxStackSlotsNeeded = Math.Max(maxStackSlotsNeeded, statment.Metadata.StackSlotsNeeded);
+            }
+        }
+        ifStatement.Metadata.StackSlotsNeeded = maxStackSlotsNeeded;
+    }
+
     private void GatherMetadata(ExpressionBase expression)
     {
         switch (expression)
@@ -554,17 +1353,16 @@ public class MineralCompiler
 
     private void GatherMetadata(BinaryExpression binaryExpression)
     {
+        
         GatherMetadata(binaryExpression.Left);
         GatherMetadata(binaryExpression.Right);
-        if (binaryExpression.Left.Metadata.SU == binaryExpression.Right.Metadata.SU)
-        {
-            binaryExpression.Metadata.SU = binaryExpression.Left.Metadata.SU + 1;
-        }
-        else
-        {
-            binaryExpression.Metadata.SU = Math.Max(binaryExpression.Left.Metadata.SU, binaryExpression.Right.Metadata.SU);
-        }
+        binaryExpression.Metadata.StackSlotsNeeded = Math.Max(binaryExpression.Left.Metadata.StackSlotsNeeded, binaryExpression.Right.Metadata.StackSlotsNeeded);
         binaryExpression.Metadata.ContainsCall = binaryExpression.Left.Metadata.ContainsCall || binaryExpression.Right.Metadata.ContainsCall;
+
+        if (binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        {
+            binaryExpression.Metadata.StackSlotsNeeded += 1;
+        }
     }
 
     private void GatherMetadata(CallExpression callExpression)
@@ -575,23 +1373,30 @@ public class MineralCompiler
         }
         callExpression.Metadata.SU = 4;
         callExpression.Metadata.ContainsCall = true;
+        callExpression.Metadata.StackSlotsNeeded = callExpression.Arguments.Max(a => a.Metadata.StackSlotsNeeded);
     }
 
     private void GatherMetadata(IdentifierExpression identifierExpression)
     {
         identifierExpression.Metadata.SU = 0;
+        identifierExpression.Metadata.ContainsCall = false;
+        identifierExpression.Metadata.StackSlotsNeeded = 0;
     }
 
     private void GatherMetadata(LiteralExpression literalExpression)
     {
         literalExpression.Metadata.SU = 1;
+        literalExpression.Metadata.ContainsCall = false;
+        literalExpression.Metadata.StackSlotsNeeded = 0;
     }
 
     private void GatherMetadata(MemberAccessExpression memberAccessExpression)
     {
         GatherMetadata(memberAccessExpression.Instance);
+
         memberAccessExpression.Metadata.SU = memberAccessExpression.Instance.Metadata.SU;
         memberAccessExpression.Metadata.ContainsCall = memberAccessExpression.Instance.Metadata.ContainsCall;
+        memberAccessExpression.Metadata.StackSlotsNeeded = memberAccessExpression.Instance.Metadata.StackSlotsNeeded;
     }
 
     private void GatherMetadata(ReferenceExpression referenceExpression)
@@ -601,10 +1406,13 @@ public class MineralCompiler
             GatherMetadata(referenceExpression.Instance);
             referenceExpression.Metadata.SU = referenceExpression.Instance.Metadata.SU;
             referenceExpression.Metadata.ContainsCall = referenceExpression.Instance.Metadata.ContainsCall;
+            referenceExpression.Metadata.StackSlotsNeeded = referenceExpression.Instance.Metadata.StackSlotsNeeded;
         }
         else
         {
             referenceExpression.Metadata.SU = 1;
+            referenceExpression.Metadata.ContainsCall = false;
+            referenceExpression.Metadata.StackSlotsNeeded = 0;
         }
     }
 

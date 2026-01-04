@@ -1,4 +1,6 @@
-﻿using Mineral.Language.StaticAnalysis;
+﻿using Mineral.Language.Expressions;
+using Mineral.Language.StaticAnalysis;
+using System.Linq.Expressions;
 using Tokenizer.Core.Models;
 
 namespace Mineral.Language.Compiler;
@@ -54,4 +56,16 @@ public static class CompilerTypeExtensions
         }
         return false;
     }
+
+
+    public static bool IsIntegerType(this ExpressionBase expression)
+    {
+        return expression.ConcreteType.IsEqualTo(NativeTypes.Int);
+    }
+
+    public static bool IsFloatingPointType(this ExpressionBase expression)
+    {
+        return expression.ConcreteType.IsEqualTo(NativeTypes.Float);
+    }
+
 }

@@ -1017,6 +1017,8 @@ public class FunctionContext
         variableType = new ConcreteType(BuiltinType.Void);
         return false;
     }
+
+    public CompilerMetadata Metadata { get; private set; } = new();
 }
 
 

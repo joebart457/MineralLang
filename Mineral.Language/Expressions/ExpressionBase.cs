@@ -24,5 +24,6 @@ public class CompilerMetadata
 {
     public int SU { get; set; } // Sethi-Ullman number for minimal register spills
     public bool ContainsCall { get; set; }
+    public int StackSlotsNeeded { get; set; }
 
 }
