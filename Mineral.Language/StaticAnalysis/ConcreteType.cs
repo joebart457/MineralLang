@@ -4,6 +4,7 @@ namespace Mineral.Language.StaticAnalysis;
 
 public class ConcreteType
 {
+    public virtual bool IsBuiltin => true;
     public BuiltinType BuiltinType { get; set; }
 
     public ConcreteType(BuiltinType builtinType)
@@ -19,6 +20,7 @@ public class ConcreteType
 
 public class ReferenceType: ConcreteType
 {
+    public override bool IsBuiltin => false;
     public ConcreteType ReferencedType { get; set; }
 
     public ReferenceType(ConcreteType referencedType): base(BuiltinType.Reference)
@@ -34,6 +36,7 @@ public class ReferenceType: ConcreteType
 
 public class StructType: ConcreteType
 {
+    public override bool IsBuiltin => false;
     public Token TypeName { get; set; }
     public List<StructTypeField> Members { get; set; }
 
@@ -69,6 +72,7 @@ public class StructTypeField
 
 public class CallableType : ConcreteType
 {
+    public override bool IsBuiltin => false;
     public CallableType(Token? functionName, ConcreteType returnType, List<FunctionParameter> parameters, bool isErrorable) : base(BuiltinType.Callable)
     {
         FunctionName = functionName;
@@ -105,6 +109,7 @@ public class FunctionParameter
 
 public class NullPointerType : ConcreteType
 {
+    public override bool IsBuiltin => false;
     public NullPointerType() : base(BuiltinType.Void)
     {
     }

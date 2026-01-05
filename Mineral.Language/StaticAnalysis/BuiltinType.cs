@@ -3,6 +3,7 @@ namespace Mineral.Language.StaticAnalysis;
 
 public enum BuiltinType
 {
+    Byte,
     Int,
     Float,
     String,

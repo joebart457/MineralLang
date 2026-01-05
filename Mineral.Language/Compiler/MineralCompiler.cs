@@ -6,6 +6,7 @@ using Mineral.Language.StaticAnalysis;
 using System.Runtime.InteropServices;
 using Tokenizer.Core.Models;
 using X86_64Assembler;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 
 namespace Mineral.Language.Compiler;
@@ -14,7 +15,7 @@ public class MineralCompiler
 {
 
     private X86AssemblyContext _asm = new();
-
+    private FunctionContext _ctx;
     public (bool success, string error) CompileProgram(string outputPath, ProgramContext program, string entryPoint = "main.main@int", OutputTarget outputTarget = OutputTarget.Exe)
     {
         try
@@ -72,7 +73,7 @@ public class MineralCompiler
         return mem;
     }
 
-    private void FreeLastStackSlot()
+    private void FreeLastUsedStackSlot()
     {
         // Frees the most recently used stack slot
         _stackSlotIndex--;
@@ -82,7 +83,8 @@ public class MineralCompiler
     private void CompileFunction(FunctionContext functionContext)
     {
         _stackSlotIndex = 0;
-        if (functionContext.IsImported) return; 
+        if (functionContext.IsImported) return;
+        _ctx = functionContext;
         var parameters = functionContext.Parameters.Select(kv => new X86FunctionLocalData(kv.Key.Lexeme, kv.Value.GetStackSize())).ToList();
         var localVariables = functionContext.LocalVariables.Select(kv => new X86FunctionLocalData(kv.Key.Lexeme, kv.Value.GetStackSize())).ToList();
 
@@ -109,19 +111,216 @@ public class MineralCompiler
         _asm.ExitFunction();
     }
 
+    #region Statements
+
+    private void Compile(StatementBase statement)
+    {
+        switch (statement)
+        {
+            case ReturnStatement returnStatement:
+                Compile(returnStatement);
+                break;
+            case ErrorStatement errorStatement:
+                Compile(errorStatement);
+                break;
+            case ConditionalStatement conditionalStatement:
+                Compile(conditionalStatement);
+                break;
+            case AssignmentStatement assignmentStatement:
+                Compile(assignmentStatement);
+                break;
+            default:
+                throw new InvalidOperationException($"Unknown statement type '{statement.GetType()}'");
+        }
+    }
+
+    private void Compile(ReturnStatement returnStatement)
+    {
+        var rm = Compile(returnStatement.ValueToReturn, Reg64.RAX, Xmm128.XMM0);
+        if (returnStatement.ValueToReturn.IsFloatingPointType())
+        {
+            HandleRM(rm,
+                (mem) => _asm.Movss(Xmm128.XMM0, mem),
+                (xmm) => _asm.Movaps(Xmm128.XMM0, (RM128)xmm));
+        }
+        else
+        {
+            HandleRM(rm,
+                (mem) => _asm.Mov(Reg64.RAX, mem),
+                (reg) => _asm.MovIfNeeded(Reg64.RAX, reg),
+                (imm) => _asm.Mov(Reg64.RAX, imm));
+        }
+
+        if (_ctx.IsErrorable) _asm.Xor(Reg64.RDX, (RM64)Reg64.RDX); // Zero out error before returning value
+        _asm.TearDownStackFrame();
+        _asm.Ret();
+    }
+
+    private void Compile(ErrorStatement errorStatement)
+    {
+        var rm = Compile(errorStatement.ErrorToReturn, Reg64.RDX, Xmm128.XMM0);
+        HandleRM(rm,
+            (mem) => _asm.Mov(Reg64.RDX, mem),
+            (reg) => _asm.MovIfNeeded(Reg64.RDX, reg),
+            (imm) => _asm.Mov(Reg64.RDX, imm));
+
+        _asm.TearDownStackFrame();
+        _asm.Ret();
+    }
+
+    private void Compile(ConditionalStatement conditionalStatement)
+    {
+
+        var thenBlock = () =>
+        {
+            foreach (var stmt in conditionalStatement.ThenBlock)
+                Compile(stmt);
+        };
+
+        var elseBlock = () =>
+        {
+            foreach (var stmt in conditionalStatement.ElseBlock)
+                Compile(stmt);
+        };
+
+        if (conditionalStatement.ConditionalTarget is BinaryExpression binaryExpression)
+        {
+            CompileAsConditionalBlock(binaryExpression, thenBlock, elseBlock);
+            return;
+        }
+
+        var rmCondition = Compile(conditionalStatement.ConditionalTarget, Reg64.RAX, Xmm128.XMM0);
+
+        // Ensure value in RAX
+        var regToTest = Reg64.RAX;
+        HandleRM(rmCondition,
+            (mem) => _asm.Mov(regToTest, mem),
+            (reg) => _asm.MovIfNeeded(regToTest, reg),
+            (imm) => _asm.Mov(regToTest, imm));
+
+
+        var falseLabel = _asm.CreateUniqueLabel("CTST_");
+        var endLabel = _asm.CreateUniqueLabel("CTST_END_");
+        _asm.Test(regToTest, regToTest);
+        _asm.Jz(Rel32.Create(falseLabel));
+        thenBlock();
+        _asm.Jmp(Rel32.Create(endLabel));
+        _asm.Label(falseLabel);
+        elseBlock();
+        _asm.Label(endLabel);
+    }
+
+    private void Compile(AssignmentStatement assignmentStatement)
+    {
+        var errorTarget = assignmentStatement.ErrorTarget;
+        if (errorTarget == null && assignmentStatement.Value is CallExpression callExpression && callExpression.Callee.ConcreteType is CallableType callableType && callableType.ReturnType.IsVoidType() && callableType.IsErrorable)
+        {
+            errorTarget = assignmentStatement.AssignmentTarget;
+            Compile(callExpression, Reg64.RAX, Xmm128.XMM0); // ??? TODO
+        }
+        else
+        {
+            var rmValue = Compile(assignmentStatement.Value, Reg64.RAX, Xmm128.XMM0);
+            var assignmentTarget = CompileAndReturnAssignmentTargetFromLValue(assignmentStatement.AssignmentTarget, Reg64.RCX);
+
+            if (assignmentTarget != null)
+            {
+                if (assignmentStatement.AssignmentTarget.IsFloatingPointType())
+                {
+                    HandleRM(rmValue,
+                        (mem) =>
+                        {
+                            _asm.Movss(Xmm128.XMM0, mem);
+                            _asm.Movss(assignmentTarget, Xmm128.XMM0);
+                        },
+                        (Xmm128 xmm) => _asm.Movss(assignmentTarget, xmm));
+                }
+                else
+                {
+                    HandleRM(rmValue,
+                        (mem) =>
+                        {
+                            _asm.Mov(Reg64.RAX, mem);
+                            _asm.Mov(assignmentTarget, Reg64.RAX);
+                        },
+                        (reg) => _asm.Mov(assignmentTarget, reg),
+                        (imm) => _asm.Mov(assignmentTarget, imm));
+                }
+            }
+
+
+
+
+            // Errors returned in edx
+            if (errorTarget != null)
+            {
+                var errorTargetMemoryLocation = CompileAndReturnAssignmentTargetFromLValue(errorTarget, Reg64.RDX);
+
+                if (errorTargetMemoryLocation != null)
+                {
+                    HandleRM(rmValue,
+                       (mem) =>
+                       {
+                           _asm.Mov(Reg64.RDX, mem);
+                           _asm.Mov(errorTargetMemoryLocation, Reg64.RDX);
+                       },
+                       (reg) => _asm.Mov(errorTargetMemoryLocation, reg),
+                       (imm) => _asm.Mov(errorTargetMemoryLocation, imm));
+                } // else pass for discard
+            }
+
+        }
+    }
+
+
+
+    private Mem64? CompileAndReturnAssignmentTargetFromLValue(LValue lValue, Reg64 desiredReg)
+    {
+        if (lValue is IdentifierLValue identifierLValue)
+        {
+            return _asm.GetIdentifierOffset(identifierLValue.VariableName.Lexeme, out _);
+        }
+        else if (lValue is InstanceMemberLValue instanceMemberLValue)
+        {
+            var instanceMemoryLocation = CompileAndReturnAssignmentTargetFromLValue(instanceMemberLValue.Instance, desiredReg);
+            if (instanceMemoryLocation == null) throw new InvalidOperationException("Invalid discard as left hand side of member access");
+            if (instanceMemberLValue.Instance.ConcreteType.TryGetMemberOffsetFromStructOrReference(instanceMemberLValue.Member, out var isReferenceType, out var offset))
+            {
+                if (isReferenceType)
+                {
+                    _asm.Mov(desiredReg, instanceMemoryLocation);
+                    return Mem64.Create(desiredReg, offset);
+                }
+
+                // If it is a struct type is it guaranteed to be on the stack
+                if (instanceMemoryLocation.Register != Reg64.RBP || instanceMemoryLocation.Displacement is not Disp32 disp32) throw new InvalidOperationException("structs should only be stack allocated");
+                return Mem64.Create(Reg64.RBP, disp32.Offset - offset);
+            }
+            else throw new InvalidOperationException($"unable to find member '{instanceMemberLValue.Member.Lexeme}' in type '{instanceMemberLValue.Instance.ConcreteType}' or '{instanceMemberLValue.Instance.ConcreteType}' is not a struct type");
+        }
+        else if (lValue is DiscardLValue)
+        {
+            // Pass
+            return null;
+        }
+        else throw new NotSupportedException($"lvalue of type '{lValue.GetType()}' is not a supported assignment target");
+    }
+
+    #endregion
+
 
     #region Happy path expression compilation
 
-    private RM Compile(ExpressionBase expression)
+    private RM Compile(ExpressionBase expression, Reg64 desiredReg, Xmm128 desiredXmm)
     {
         switch (expression)
         {
             case CallExpression callExpression:
-                return Compile(callExpression);
+                return Compile(callExpression, desiredReg, desiredXmm);
             case IdentifierExpression identifierExpression:
                 return Compile(identifierExpression);
             case MemberAccessExpression memberAccessExpression:
-                return Compile(memberAccessExpression);
+                return Compile(memberAccessExpression, desiredReg, desiredXmm);
             case LiteralExpression literalExpression:
                 return Compile(literalExpression);
             default:
@@ -133,9 +332,25 @@ public class MineralCompiler
         return _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _);
     }
 
-    private Mem64 Compile(MemberAccessExpression memberAccessExpression)
+    private RM Compile(LiteralExpression literalExpression)
     {
-        var instanceLocation = Compile(memberAccessExpression.Instance);
+        if (literalExpression.Value is int i)
+            return Imm32.Create(i);
+        else if (literalExpression.Value is float flt)
+        {
+            return _asm.AddFloatingPoint(flt);
+        }
+        else if (literalExpression.Value is string)
+            literalExpression.TagAsType(new ConcreteType(BuiltinType.String));
+        else if (literalExpression.Value is null)
+            literalExpression.TagAsType(new NullPointerType());
+        else
+            errors.Add(literalExpression, $"Unknown literal type for value '{literalExpression.Value}'");
+    }
+
+    private Mem64 Compile(MemberAccessExpression memberAccessExpression, Reg64 desiredReg, Xmm128 desiredXmm)
+    {
+        var instanceLocation = Compile(memberAccessExpression.Instance, desiredReg, desiredXmm);
         if (!memberAccessExpression.Instance.ConcreteType.TryGetMemberOffsetFromStructOrReference(memberAccessExpression.MemberToAccess, out var isReferenceType, out var offset))
             throw new InvalidOperationException($"expect left hand side of member access to be struct type but got '{memberAccessExpression.Instance.ConcreteType}' or type '{memberAccessExpression.Instance.ConcreteType}' does not contain member '{memberAccessExpression.MemberToAccess.Lexeme}'");
         if (!isReferenceType)
@@ -153,16 +368,17 @@ public class MineralCompiler
         return HandleRM(instanceLocation,
                 mem =>
                 {
-                    _asm.Mov(Reg64.RAX, mem); 
-                    return Mem64.Create(Reg64.RAX, offset);
+                    _asm.Mov(desiredReg, mem); 
+                    return Mem64.Create(desiredReg, offset);
                 },
                 reg =>
                 {
-                    return Mem64.Create(reg, offset);
+                    _asm.MovIfNeeded(desiredReg, reg); // TODO verify needed?
+                    return Mem64.Create(desiredReg, offset);
                 });
     }
 
-    private Reg64 Compile(ReferenceExpression referenceExpression)
+    private Reg64 Compile(ReferenceExpression referenceExpression, Reg64 desiredReg, Xmm128 desiredXmm)
     {
         if (referenceExpression.Instance == null)
         {
@@ -170,7 +386,7 @@ public class MineralCompiler
             _asm.Lea(Reg64.RAX, location);
             return Reg64.RAX;
         }
-        var rm = Compile(referenceExpression.Instance);
+        var rm = Compile(referenceExpression.Instance, desiredReg, desiredXmm);
         if (!referenceExpression.Instance.ConcreteType.TryGetMemberOffsetFromStructOrReference(referenceExpression.MemberToAccess, out var isReferenceType, out var offset))
             throw new InvalidOperationException($"expect left hand side of member access to be struct type but got '{referenceExpression.Instance.ConcreteType}' or type '{referenceExpression.Instance.ConcreteType}' does not contain member '{referenceExpression.MemberToAccess.Lexeme}'");
         if (!isReferenceType)
@@ -178,8 +394,8 @@ public class MineralCompiler
             return HandleRM(rm,
                 mem =>
                 {
-                    _asm.Lea(Reg64.RAX, Mem64.Create((Reg64)mem.Register, mem.Displacement.Offset + offset));
-                    return Reg64.RAX;
+                    _asm.Lea(desiredReg, Mem64.Create((Reg64)mem.Register, mem.Displacement.Offset + offset));
+                    return desiredReg;
                 },
                 reg =>
                 {
@@ -189,125 +405,565 @@ public class MineralCompiler
         return HandleRM(rm,
                 mem =>
                 {
-                    _asm.Mov(Reg64.RAX, mem); 
-                    _asm.Lea(Reg64.RAX, Mem64.Create(Reg64.RAX, offset));
-                    return Reg64.RAX;
+                    _asm.Mov(desiredReg, mem); 
+                    _asm.Lea(desiredReg, Mem64.Create(desiredReg, offset));
+                    return desiredReg;
                 },
                 reg =>
                 {
-                    _asm.Lea(Reg64.RAX, Mem64.Create(reg, offset));
-                    return Reg64.RAX;
+                    _asm.Lea(desiredReg, Mem64.Create(reg, offset));
+                    return desiredReg;
                 });
     }
 
     private RM Compile(BinaryExpression binaryExpression)
     {
-        var rmLeft = Compile(binaryExpression.Left);
-        if (binaryExpression.Right.Metadata.ContainsCall)
+        // Binary operations always compute RHS first to keep it simple and avoid too much register swapping
+        var op = binaryExpression.Operator;
+        
+        // Case 1: Lhs = CALL, Rhs = NonCall
+        if (binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
         {
-            var intermStackSlot = NextAvailableLocalStackSlot();
-            HandleRM(rmLeft,
-                mem =>
+
+            if (op == OperatorType.Division || op == OperatorType.Modulus)
+                return HandleDivision(binaryExpression, true);
+
+            return HandleOperator(binaryExpression, Reg64.RAX, Reg64.RCX, Xmm128.XMM0, Xmm128.XMM1, true);
+
+        }
+
+        // Case 2: Lhs = NonCall, Rhs = CALL
+        if (!binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        {
+
+            if (op == OperatorType.Division || op == OperatorType.Modulus)
+                return HandleDivision(binaryExpression, false);
+
+            return HandleOperator(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false);
+
+        }
+
+        // Case 3: Lhs = CALL, Rhs = CALL
+        if (binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        {
+
+            if (op == OperatorType.Division || op == OperatorType.Modulus)
+                return HandleDivision(binaryExpression, true);
+
+            return HandleOperator(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, true);
+
+        }
+
+        // Case 3: Lhs = NonCall, Rhs = NonCall
+        if (!binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        {
+
+            if (op == OperatorType.Division || op == OperatorType.Modulus)
+                return HandleDivision(binaryExpression, false);
+
+            return HandleOperator(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false);
+
+        }
+
+        throw new InvalidOperationException("unexpected binary case");
+    }
+
+    private void CompileAsConditionalBlock(BinaryExpression binaryExpression, Action thenBlock, Action elseBlock)
+    {
+        // Binary operations always compute RHS first to keep it simple and avoid too much register swapping
+        var op = binaryExpression.Operator;
+
+        // Case 1: Lhs = CALL, Rhs = NonCall
+        if (binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        {
+
+            if (op == OperatorType.Division || op == OperatorType.Modulus)
+                HandleDivision(binaryExpression, true, thenBlock, elseBlock);
+
+            else HandleOperator(binaryExpression, Reg64.RAX, Reg64.RCX, Xmm128.XMM0, Xmm128.XMM1, true, thenBlock, elseBlock);
+
+        }
+
+        // Case 2: Lhs = NonCall, Rhs = CALL
+        if (!binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        {
+
+            if (op == OperatorType.Division || op == OperatorType.Modulus)
+                HandleDivision(binaryExpression, false, thenBlock, elseBlock);
+
+            else HandleOperator(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false, thenBlock, elseBlock);
+
+        }
+
+        // Case 3: Lhs = CALL, Rhs = CALL
+        if (binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        {
+
+            if (op == OperatorType.Division || op == OperatorType.Modulus)
+                HandleDivision(binaryExpression, true, thenBlock, elseBlock);
+
+            else HandleOperator(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, true, thenBlock, elseBlock);
+
+        }
+
+        // Case 3: Lhs = NonCall, Rhs = NonCall
+        if (!binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        {
+
+            if (op == OperatorType.Division || op == OperatorType.Modulus)
+                HandleDivision(binaryExpression, false, thenBlock, elseBlock);
+
+            else HandleOperator(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false, thenBlock, elseBlock);
+
+        }
+
+        throw new InvalidOperationException("unexpected binary case");
+    }
+
+
+    #region Binary Helpers
+
+    private RM HandleDivision(BinaryExpression binaryExpression, bool spillRightResult)
+    {
+        var op = binaryExpression.Operator;
+        var leftReg = Reg64.RAX;
+        var rightReg = Reg64.RCX;
+        var rmRight = Compile(binaryExpression.Right, rightReg, Xmm128.XMM1);
+        if (spillRightResult)
+        {
+            var interm = NextAvailableLocalStackSlot();
+            HandleRM(rmRight,
+                (mem) =>
                 {
-                    _asm.Mov(Reg64.RAX, mem);
-                    _asm.Mov(intermStackSlot, Reg64.RAX);
+                    if (mem.Register != Reg64.RBP)
+                    {
+                        // If register does not persist accross calls
+                        _asm.Mov(rightReg, mem);
+                        _asm.Mov(interm, rightReg);
+                        rmRight = interm;
+                    }
+
                 },
-                reg =>
-                {
-                    _asm.Mov(intermStackSlot, reg);
-                },
-                xmm =>
-                {
-                    _asm.Movss(intermStackSlot, xmm);
+                (reg) => { _asm.Mov(interm, reg); rmRight = interm; },
+                (Imm32 imm) => {
+                    // Pass since immediates persist always
                 });
-
-            var rmRight = Compile(binaryExpression.Right);
-
-
         }
+        var rmLeft = Compile(binaryExpression.Right, leftReg, Xmm128.XMM0);
+
+        // Ensure lhs is in RAX
+        HandleRM(rmLeft,
+            (mem) => _asm.Mov(leftReg, mem),
+            (reg) => _asm.MovIfNeeded(leftReg, reg),
+            (Imm32 imm) => _asm.Mov(leftReg, imm));
+
+        OperatorFactory.Handle<Reg64, Imm32>(
+            leftReg, rmRight,
+            (reg, mem) =>
+            {
+                _asm.Cqo();
+                _asm.Idiv((RM64)mem);
+            },
+            (regDest, regSrc) =>
+            {
+                _asm.Cqo();
+                _asm.Idiv(regSrc);
+            },
+            (reg, imm) =>
+            {
+                _asm.Cqo();
+                _asm.Mov(rightReg, imm);
+                _asm.Idiv(rightReg);
+            });
+
+        if (spillRightResult) FreeLastUsedStackSlot();
+        return op == OperatorType.Division ? Reg64.RAX : Reg64.RDX;
     }
 
-    private void HandleOperation(RM left, RM right, OperatorType op)
+    private void HandleDivision(BinaryExpression binaryExpression, bool spillRightResult, Action thenBlock, Action elseBlock)
     {
-        if (left is Reg64 regLeft && right is Reg64 regRight)
+        var op = binaryExpression.Operator;
+        var leftReg = Reg64.RAX;
+        var rightReg = Reg64.RCX;
+        var rmRight = Compile(binaryExpression.Right, rightReg, Xmm128.XMM1);
+        if (spillRightResult)
         {
+            var interm = NextAvailableLocalStackSlot();
+            HandleRM(rmRight,
+                (mem) =>
+                {
+                    if (mem.Register != Reg64.RBP)
+                    {
+                        // If register does not persist accross calls
+                        _asm.Mov(rightReg, mem);
+                        _asm.Mov(interm, rightReg);
+                        rmRight = interm;
+                    }
 
+                },
+                (reg) => { _asm.Mov(interm, reg); rmRight = interm; },
+                (Imm32 imm) => {
+                    // Pass since immediates persist always
+                });
         }
+        var rmLeft = Compile(binaryExpression.Right, leftReg, Xmm128.XMM0);
+
+        // Ensure lhs is in RAX
+        HandleRM(rmLeft,
+            (mem) => _asm.Mov(leftReg, mem),
+            (reg) => _asm.MovIfNeeded(leftReg, reg),
+            (Imm32 imm) => _asm.Mov(leftReg, imm));
+
+        OperatorFactory.Handle<Reg64, Imm32>(
+            leftReg, rmRight,
+            (reg, mem) =>
+            {
+                _asm.Cqo();
+                _asm.Idiv((RM64)mem);
+            },
+            (regDest, regSrc) =>
+            {
+                _asm.Cqo();
+                _asm.Idiv(regSrc);
+            },
+            (reg, imm) =>
+            {
+                _asm.Cqo();
+                _asm.Mov(rightReg, imm);
+                _asm.Idiv(rightReg);
+            });
+
+        if (spillRightResult) FreeLastUsedStackSlot();
+        var regToTest = op == OperatorType.Division ? Reg64.RAX : Reg64.RDX;
+        var falseLabel = _asm.CreateUniqueLabel("CTST_");
+        var endLabel = _asm.CreateUniqueLabel("CTST_END_");
+        _asm.Test(regToTest, regToTest);
+        _asm.Jz(Rel32.Create(falseLabel));
+        thenBlock();
+        _asm.Jmp(Rel32.Create(endLabel));
+        _asm.Label(falseLabel);
+        elseBlock();
+        _asm.Label(endLabel);
+
     }
 
-    private void HandleOperation(Reg64 left, Reg64 right, OperatorType op)
+    private RM HandleOperator(BinaryExpression binaryExpression, Reg64 leftReg, Reg64 rightReg, Xmm128 leftXmm, Xmm128 rightXmm, bool spillRightResult)
     {
+        var op = binaryExpression.Operator;
+        RM rmReturn = leftReg;
+        var rmRight = Compile(binaryExpression.Right, rightReg, rightXmm);
 
-    }
-
-    private Reg64 HandleOperation(Reg64 left, Mem64 right, OperatorType op)
-    {
-        if (op == OperatorType.Addition)
+        if (spillRightResult)
         {
-            _asm.Add(left, right);
+            var interm = NextAvailableLocalStackSlot();
+            HandleRM(rmRight,
+                (mem) =>
+                {
+                    if (mem.Register != Reg64.RBP)
+                    {
+                        // If register does not persist accross calls
+                        _asm.Mov(rightReg, mem);
+                        _asm.Mov(interm, rightReg);
+                        rmRight = interm;
+                    }
+
+                },
+                (reg) => { _asm.Mov(interm, reg); rmRight = interm; },
+                (Imm32 imm) => {
+                    // Pass since immediates persist always
+                });
         }
-        else if (op == OperatorType.Subtraction)
+
+        var rmLeft = Compile(binaryExpression.Left, leftReg, leftXmm);
+
+        if (op == OperatorType.Subtraction)
         {
-            _asm.Sub(left, right);
+            // Ensure lhs is in a register
+            HandleRM(rmLeft,
+                (mem) => _asm.Mov(leftReg, mem),
+                (reg) => _asm.MovIfNeeded(leftReg, reg),
+                (Imm32 imm) => _asm.Mov(leftReg, imm));
+
+            OperatorFactory.Handle<Reg64, Imm32>(
+                leftReg, rmRight,
+                (reg, mem) => _asm.Sub(reg, mem),
+                (dest, src) => _asm.Sub(dest, (RM64)src),
+                (reg, imm) => _asm.Sub(reg, imm.Value));
+
+           
+        }
+        else if (op == OperatorType.Addition)
+        {
+            OperatorFactory.HandleCommutative<Reg64, Imm32>(rmLeft, rmRight,
+                (mem) => { _asm.Mov(leftReg, mem); return leftReg; },
+                (imm) => { _asm.Mov(leftReg, imm); return leftReg; },
+                (reg, mem) => _asm.Add(reg, mem),
+                (dest, src) => _asm.Add(dest, (RM64)src),
+                (reg, imm) => _asm.Add(reg, imm.Value),
+                (imm, reg) => { _asm.Add(reg, imm.Value); rmReturn = reg; },
+                (mem, reg) => { _asm.Add(reg, mem); rmReturn = reg; });
+
         }
         else if (op == OperatorType.Multiplication)
         {
-            _asm.Imul(left, right);
+            OperatorFactory.HandleCommutative<Reg64, Imm32>(rmLeft, rmRight,
+                (mem) => { _asm.Mov(leftReg, mem); return leftReg; },
+                (imm) => { _asm.Mov(leftReg, imm); return leftReg; },
+                (reg, mem) => _asm.Imul(reg, mem),
+                (dest, src) => _asm.Imul(dest, src),
+                (reg, imm) => _asm.Imul(reg, reg, imm.Value),
+                (imm, reg) => { _asm.Imul(reg, reg, imm.Value); rmReturn = reg; },
+                (mem, reg) => { _asm.Imul(reg, mem); rmReturn = reg; });
         }
-        else if (op == OperatorType.Division || op == OperatorType.Modulus)
+        else if (op == OperatorType.LessThan)
+            rmReturn = HandleConditional(leftReg, rmLeft, rmRight, ConditionCodes.GE, "CL", "CL_END");
+        else if (op == OperatorType.LessThanOrEqual)
+            rmReturn = HandleConditional(leftReg, rmLeft, rmRight, ConditionCodes.G, "CLE", "CLE_END");
+        else if (op == OperatorType.GreaterThan)
+            rmReturn = HandleConditional(leftReg, rmLeft, rmRight, ConditionCodes.LE, "CG", "CG_END");
+        else if (op == OperatorType.GreaterThanOrEqual)
+            rmReturn = HandleConditional(leftReg, rmLeft, rmRight, ConditionCodes.L, "CGE", "CGE_END");
+        else if (op == OperatorType.Equality)
+            rmReturn = HandleConditional(leftReg, rmLeft, rmRight, ConditionCodes.NE, "CE", "CE_END");
+        else if (op == OperatorType.NotEqual)
+            rmReturn = HandleConditional(leftReg, rmLeft, rmRight, ConditionCodes.GE, "CNE", "CNE_END");
+        else throw new InvalidOperationException($"operator type '{op}' is not supported");
+
+        if (spillRightResult) FreeLastUsedStackSlot();
+        return rmReturn;
+    }
+
+    private void HandleOperator(BinaryExpression binaryExpression, Reg64 leftReg, Reg64 rightReg, Xmm128 leftXmm, Xmm128 rightXmm, bool spillRightResult, Action thenBlock, Action elseBlock)
+    {
+        var op = binaryExpression.Operator;
+        Reg64? rmReturn = leftReg;
+        var rmRight = Compile(binaryExpression.Right, rightReg, rightXmm);
+
+        if (spillRightResult)
         {
-            if (left != Reg64.RAX) _asm.Mov(Reg64.RAX, (RM64)left);
-            _asm.Cqo();
-            _asm.Div((RM64)right);
-            return op == OperatorType.Division ? Reg64.RAX : Reg64.RDX;
+            var interm = NextAvailableLocalStackSlot();
+            HandleRM(rmRight,
+                (mem) =>
+                {
+                    if (mem.Register != Reg64.RBP)
+                    {
+                        // If register does not persist accross calls
+                        _asm.Mov(rightReg, mem);
+                        _asm.Mov(interm, rightReg);
+                        rmRight = interm;
+                    }
+
+                },
+                (reg) => { _asm.Mov(interm, reg); rmRight = interm; },
+                (Imm32 imm) => {
+                    // Pass since immediates persist always
+                });
         }
 
+        var rmLeft = Compile(binaryExpression.Left, leftReg, leftXmm);
 
+        if (op == OperatorType.Subtraction)
+        {
+            // Ensure lhs is in a register
+            HandleRM(rmLeft,
+                (mem) => _asm.Mov(leftReg, mem),
+                (reg) => _asm.MovIfNeeded(leftReg, reg),
+                (Imm32 imm) => _asm.Mov(leftReg, imm));
+
+            OperatorFactory.Handle<Reg64, Imm32>(
+                leftReg, rmRight,
+                (reg, mem) => _asm.Sub(reg, mem),
+                (dest, src) => _asm.Sub(dest, (RM64)src),
+                (reg, imm) => _asm.Sub(reg, imm.Value));
+
+
+        }
+        else if (op == OperatorType.Addition)
+        {
+            OperatorFactory.HandleCommutative<Reg64, Imm32>(rmLeft, rmRight,
+                (mem) => { _asm.Mov(leftReg, mem); return leftReg; },
+                (imm) => { _asm.Mov(leftReg, imm); return leftReg; },
+                (reg, mem) => _asm.Add(reg, mem),
+                (dest, src) => _asm.Add(dest, (RM64)src),
+                (reg, imm) => _asm.Add(reg, imm.Value),
+                (imm, reg) => { _asm.Add(reg, imm.Value); rmReturn = reg; },
+                (mem, reg) => { _asm.Add(reg, mem); rmReturn = reg; });
+
+        }
+        else if (op == OperatorType.Multiplication)
+        {
+            OperatorFactory.HandleCommutative<Reg64, Imm32>(rmLeft, rmRight,
+                (mem) => { _asm.Mov(leftReg, mem); return leftReg; },
+                (imm) => { _asm.Mov(leftReg, imm); return leftReg; },
+                (reg, mem) => _asm.Imul(reg, mem),
+                (dest, src) => _asm.Imul(dest, src),
+                (reg, imm) => _asm.Imul(reg, reg, imm.Value),
+                (imm, reg) => { _asm.Imul(reg, reg, imm.Value); rmReturn = reg; },
+                (mem, reg) => { _asm.Imul(reg, mem); rmReturn = reg; });
+        }
+        else if (op == OperatorType.LessThan)
+            rmReturn = HandleConditionalBranch(leftReg, rmLeft, rmRight, ConditionCodes.GE, "CL", "CL_END", thenBlock, elseBlock);
+        else if (op == OperatorType.LessThanOrEqual)
+            rmReturn = HandleConditionalBranch(leftReg, rmLeft, rmRight, ConditionCodes.G, "CLE", "CLE_END", thenBlock, elseBlock);
+        else if (op == OperatorType.GreaterThan)
+            rmReturn = HandleConditionalBranch(leftReg, rmLeft, rmRight, ConditionCodes.LE, "CG", "CG_END", thenBlock, elseBlock);
+        else if (op == OperatorType.GreaterThanOrEqual)
+            rmReturn = HandleConditionalBranch(leftReg, rmLeft, rmRight, ConditionCodes.L, "CGE", "CGE_END", thenBlock, elseBlock);
+        else if (op == OperatorType.Equality)
+            rmReturn = HandleConditionalBranch(leftReg, rmLeft, rmRight, ConditionCodes.NE, "CE", "CE_END", thenBlock, elseBlock);
+        else if (op == OperatorType.NotEqual)
+            rmReturn = HandleConditionalBranch(leftReg, rmLeft, rmRight, ConditionCodes.GE, "CNE", "CNE_END", thenBlock, elseBlock);
+        else throw new InvalidOperationException($"operator type '{op}' is not supported");
+
+        if (spillRightResult) FreeLastUsedStackSlot();
+        if(rmReturn != null)
+        {
+            // then we still need to test for the branch
+            var falseLabel = _asm.CreateUniqueLabel("CTST_");
+            var endLabel = _asm.CreateUniqueLabel("CTST_END_");
+            _asm.Test(rmReturn, rmReturn);
+            _asm.Jz(Rel32.Create(falseLabel));
+            thenBlock();
+            _asm.Jmp(Rel32.Create(endLabel));
+            _asm.Label(falseLabel);
+            elseBlock();
+            _asm.Label(endLabel);
+        }
     }
-    private void HandleOperation(Reg64 left, Xmm128 right, OperatorType op)
-    {
 
+    private Reg64 HandleConditional(Reg64 leftReg, RM rmLeft, RM rmRight, byte conditionCode, string labelPrefix, string endLabelPrefix)
+    {
+        // Note: condition code must be inverted for this logic to work
+        // IE if test is less than, conditon code should be GE (greater equal)
+        OperatorFactory.Handle<Reg64, Imm32>(rmLeft, rmRight,
+                    (mem) =>
+                    {
+                        _asm.Mov(leftReg, mem);
+                        return leftReg;
+                    },
+                    (reg) =>
+                    {
+                        if (leftReg != reg) _asm.Mov(leftReg, (RM64)reg);
+                        return leftReg;
+                    },
+                    (imm) =>
+                    {
+                        _asm.Mov(leftReg, imm);
+                        return leftReg;
+                    },
+                    (reg, mem) =>
+                    {
+
+                        var falsePath = _asm.CreateUniqueLabel(labelPrefix);
+                        var endLabel = _asm.CreateUniqueLabel(endLabelPrefix);
+                        _asm.Cmp(reg, mem);
+                        _asm.Jcc(Rel32.Create(falsePath), conditionCode);
+                        _asm.Mov(reg, Imm32.Create(1));
+                        _asm.Jmp(Rel32.Create(endLabel));
+                        _asm.Label(falsePath);
+                        _asm.Xor(reg, (RM64)reg);
+                        _asm.Label(endLabel);
+                    },
+                    (regDest, regSrc) =>
+                    {
+
+                        var falsePath = _asm.CreateUniqueLabel(labelPrefix);
+                        var endLabel = _asm.CreateUniqueLabel(endLabelPrefix);
+                        _asm.Cmp(regDest, (RM64)regSrc);
+                        _asm.Jcc(Rel32.Create(falsePath), conditionCode);
+                        _asm.Mov(regDest, Imm32.Create(1));
+                        _asm.Jmp(Rel32.Create(endLabel));
+                        _asm.Label(falsePath);
+                        _asm.Xor(regDest, (RM64)regDest);
+                        _asm.Label(endLabel);
+                    },
+                    (reg, imm) =>
+                    {
+                        var falsePath = _asm.CreateUniqueLabel(labelPrefix);
+                        var endLabel = _asm.CreateUniqueLabel(endLabelPrefix);
+                        _asm.Cmp(reg, imm.Value);
+                        _asm.Jcc(Rel32.Create(falsePath), conditionCode);
+                        _asm.Mov(reg, Imm32.Create(1));
+                        _asm.Jmp(Rel32.Create(endLabel));
+                        _asm.Label(falsePath);
+                        _asm.Xor(reg, (RM64)reg);
+                        _asm.Label(endLabel);
+                    });
+        return leftReg;
     }
 
 
-    private void HandleOperation(Mem64 left, Reg64 right, OperatorType op)
+    private Reg64? HandleConditionalBranch(Reg64 leftReg, RM rmLeft, RM rmRight, byte conditionCode, string labelPrefix, string endLabelPrefix, Action ifBlock, Action elseBlock)
     {
+        // Note: condition code must be inverted for this logic to work
+        // IE if test is less than, conditon code should be GE (greater equal)
+        OperatorFactory.Handle<Reg64, Imm32>(rmLeft, rmRight,
+                    (mem) =>
+                    {
+                        _asm.Mov(leftReg, mem);
+                        return leftReg;
+                    },
+                    (reg) =>
+                    {
+                        if (leftReg != reg) _asm.Mov(leftReg, (RM64)reg);
+                        return leftReg;
+                    },
+                    (imm) =>
+                    {
+                        _asm.Mov(leftReg, imm);
+                        return leftReg;
+                    },
+                    (reg, mem) =>
+                    {
 
+                        var falsePath = _asm.CreateUniqueLabel(labelPrefix);
+                        var endLabel = _asm.CreateUniqueLabel(endLabelPrefix);
+                        _asm.Cmp(reg, mem);
+                        _asm.Jcc(Rel32.Create(falsePath), conditionCode);
+                        ifBlock();
+                        _asm.Jmp(Rel32.Create(endLabel));
+                        _asm.Label(falsePath);
+                        elseBlock();
+                        _asm.Label(endLabel);
+                    },
+                    (regDest, regSrc) =>
+                    {
+
+                        var falsePath = _asm.CreateUniqueLabel(labelPrefix);
+                        var endLabel = _asm.CreateUniqueLabel(endLabelPrefix);
+                        _asm.Cmp(regDest, (RM64)regSrc);
+                        _asm.Jcc(Rel32.Create(falsePath), conditionCode);
+                        ifBlock();
+                        _asm.Jmp(Rel32.Create(endLabel));
+                        _asm.Label(falsePath);
+                        elseBlock();
+                        _asm.Label(endLabel);
+                    },
+                    (reg, imm) =>
+                    {
+                        var falsePath = _asm.CreateUniqueLabel(labelPrefix);
+                        var endLabel = _asm.CreateUniqueLabel(endLabelPrefix);
+                        _asm.Cmp(reg, imm.Value);
+                        _asm.Jcc(Rel32.Create(falsePath), conditionCode);
+                        ifBlock();
+                        _asm.Jmp(Rel32.Create(endLabel));
+                        _asm.Label(falsePath);
+                        elseBlock();
+                        _asm.Label(endLabel);
+                    });
+        return null;
     }
 
-    private void HandleOperation(Mem64 left, Mem64 right, OperatorType op)
+
+    #endregion
+
+    private RM Compile(CallExpression callExpression, Reg64 desiredReg, Xmm128 desiredXmm)
     {
-
-    }
-
-    private void HandleOperation(Mem64 left, Xmm128 right, OperatorType op)
-    {
-
-    }
-
-    private void HandleOperation(Xmm128 left, Reg64 right, OperatorType op)
-    {
-
-    }
-
-    private void HandleOperation(Xmm128 left, Mem64 right, OperatorType op)
-    {
-
-    }
-
-    private void HandleOperation(Xmm128 left, Xmm128 right, OperatorType op)
-    {
-
-    }
-
-
-    private RM Compile(CallExpression callExpression)
-    {
-        // Will always return in RAX or Xmm0
+        // Will always return in RAX or Xmm0, then move to desired reg
 
         // align stack
 
-        // if argument count is odd and greather than 4, we need to subtract an additional 8 bytes from RSP to keep RSP 16 byte aligned
+        // if argument count is odd and greater than 4, we need to subtract an additional 8 bytes from RSP to keep RSP 16 byte aligned
         var additionalStackToSubtract = 0;
         if (callExpression.Arguments.Count < 4) additionalStackToSubtract += (4 - callExpression.Arguments.Count) * 8;
         else if (callExpression.Arguments.Count > 4 && ((callExpression.Arguments.Count % 2) == 1)) additionalStackToSubtract = 8;
@@ -317,10 +973,18 @@ public class MineralCompiler
         }
 
         for (int i = callExpression.Arguments.Count - 1; i >= 0; i--)
-            {
-                var argument = callExpression.Arguments[i];
-                CompileAsArgument(argument);
-            }
+        {
+            var argument = callExpression.Arguments[i];
+            var rmArg = Compile(argument, Reg64.RAX, Xmm128.XMM0);
+            HandleRMForPush(rmArg,
+                (mem) => _asm.Push((RM64)mem),
+                (reg) => _asm.Push(reg),
+                (xmm) => {
+                    _asm.Sub(Reg64.RSP, 8);
+                    _asm.Movq(Mem64.Create(Reg64.RSP), Xmm128.XMM0);
+                },
+                (imm) => _asm.Push(imm.Value));        
+        }
         if (callExpression.FunctionContext != null)
         {
             if (callExpression.FunctionContext.IsImported)
@@ -348,7 +1012,7 @@ public class MineralCompiler
         else
         {
             // Indirect call
-            var indirect = Compile(callExpression.Callee);
+            var indirect = Compile(callExpression.Callee, desiredReg, desiredXmm);
             if (indirect is RM64 rm)
             {
                 _asm.Call(rm);
@@ -358,9 +1022,11 @@ public class MineralCompiler
         _asm.Add(Reg64.RSP, (callExpression.Arguments.Count * 8) + additionalStackToSubtract); // clear stack of arguments
         if (callExpression.IsFloatingPointType())
         {
-            return Xmm128.XMM0;
+            _asm.MovIfNeeded(desiredXmm, Xmm128.XMM0);
+            return desiredXmm;
         }
-        return Reg64.RAX;
+        _asm.MovIfNeeded(desiredReg, Reg64.RAX);
+        return desiredReg;
     }
 
     private Xmm128 SelectXmmRegister(int index)
@@ -394,860 +1060,8 @@ public class MineralCompiler
 
     #endregion
 
-    private Mem64 HandleRM(RM rm, Func<Mem64, Mem64> handleMemory, Func<Reg64, Mem64> handleRegister, Func<Xmm128, Mem64>? handleXmm)
-    {
-        if (rm is Reg64 reg)
-            return handleRegister(reg);
-        else if (rm is Mem64 mem)
-            return handleMemory(mem);
-        else if (handleXmm != null && rm is Xmm128 xmm)
-            return handleXmm(xmm);
-        else
-            throw new InvalidOperationException($"unexpected RM type '{rm.GetType()}'");
-    }
 
-    private Reg64 HandleRM(RM rm, Func<Mem64, Reg64> handleMemory, Func<Reg64, Reg64> handleRegister, Func<Xmm128, Reg64>? handleXmm)
-    {
-        if (rm is Reg64 reg)
-            return handleRegister(reg);
-        else if (rm is Mem64 mem)
-            return handleMemory(mem);
-        else if (handleXmm != null && rm is Xmm128 xmm)
-            return handleXmm(xmm);
-        else
-            throw new InvalidOperationException($"unexpected RM type '{rm.GetType()}'");
-    }
-
-    private void HandleRM(RM rm, Action<Mem64> handleMemory, Action<Reg64> handleRegister, Action<Xmm128>? handleXmm)
-    {
-        if (rm is Reg64 reg)
-            handleRegister(reg);
-        else if (rm is Mem64 mem)
-            handleMemory(mem);
-        else if (handleXmm != null && rm is Xmm128 xmm)
-            handleXmm(xmm);
-        else
-            throw new InvalidOperationException($"unexpected RM type '{rm.GetType()}'");
-    }
-
-    private void Compile(StatementBase statement)
-    {
-        switch (statement)
-        {
-            case ReturnStatement returnStatement:
-                Compile(returnStatement);
-                break;
-            case ErrorStatement errorStatement:
-                Compile(errorStatement);
-                break;
-            case ConditionalStatement conditionalStatement:
-                Compile(conditionalStatement);
-                break;
-            case AssignmentStatement assignmentStatement:
-                Compile(assignmentStatement);
-                break;
-            default:
-                throw new InvalidOperationException($"Unknown statement type '{statement.GetType()}'");
-        }
-    }
-
-    private void Compile(ReturnStatement returnStatement)
-    {
-        CompileToRegister(returnStatement.ValueToReturn, Reg64.RAX);
-        _asm.Xor(Reg64.RDX, (RM64)Reg64.RDX); // Zero out error before returning value
-        _asm.TearDownStackFrame();
-        _asm.Return();
-    }
-
-    private void Compile(ErrorStatement errorStatement)
-    {
-        CompileToRegister(errorStatement.ErrorToReturn, Reg64.RDX);
-        _asm.TearDownStackFrame();
-        _asm.Return();
-    }
-
-    private void Compile(ConditionalStatement conditionalStatement)
-    {
-        var memoryLocation = CompileAndReturnAssignmentTargetFromLValue(conditionalStatement.ConditionalTarget);
-        if (memoryLocation != null) _asm.Mov(Reg64.RDX, memoryLocation);
-        _asm.Test(Reg64.RDX, Reg64.RDX);
-        var endIfLabel = _asm.CreateUniqueLabel("C");
-        _asm.Jz(Rel32.Create(endIfLabel));
-        foreach(var statment in conditionalStatement.ThenBlock)
-            Compile(statment);
-        _asm.Label(endIfLabel);
-    }
-
-    private void Compile(AssignmentStatement assignmentStatement)
-    {
-        var errorTarget = assignmentStatement.ErrorTarget;
-        if (errorTarget == null && assignmentStatement.Value is CallExpression callExpression && callExpression.Callee.ConcreteType is CallableType callableType && callableType.ReturnType.IsVoidType() && callableType.IsErrorable)
-        {
-            errorTarget = assignmentStatement.AssignmentTarget;
-            CompileForError(callExpression);
-        } else
-        {
-            var assignmentTarget = CompileAndReturnAssignmentTargetFromLValue(assignmentStatement.AssignmentTarget);
-            
-            if (assignmentTarget != null) CompileAsAssignmentValue(assignmentTarget, assignmentStatement.Value);
-            else CompileToRegister(assignmentStatement.Value, Reg64.RAX);
-        }
-            
-
-
-    
-        // Errors returned in edx
-        if (errorTarget != null)
-        {
-            var errorTargetMemoryLocation = CompileAndReturnAssignmentTargetFromLValue(errorTarget);
-            if (errorTargetMemoryLocation != null) _asm.Mov(errorTargetMemoryLocation, Reg64.RDX);
-            else
-            {
-                // Pass for discard
-            }
-        }
-
-    }
-
-    private Mem64? CompileAndReturnAssignmentTargetFromLValue(LValue lValue)
-    {
-        if (lValue is IdentifierLValue identifierLValue)
-        {
-            return _asm.GetIdentifierOffset(identifierLValue.VariableName.Lexeme, out _);        
-        }
-        else if (lValue is InstanceMemberLValue instanceMemberLValue)
-        {
-            var instanceMemoryLocation = CompileAndReturnAssignmentTargetFromLValue(instanceMemberLValue.Instance);
-            if (instanceMemoryLocation == null) throw new InvalidOperationException("Invalid discard as left hand side of member access");
-            if (instanceMemberLValue.Instance.ConcreteType.TryGetMemberOffsetFromStructOrReference(instanceMemberLValue.Member, out var isReferenceType, out var offset))
-            {
-                if (isReferenceType)
-                {
-                    _asm.Mov(X86Register.ecx, instanceMemoryLocation); // Since expressions by default only use eax and edx, we use ecx so we have no need to store the assignment value temporarily
-                    return Offset.Create(X86Register.ecx, offset);
-                }
-
-                // TODO
-                _asm.Lea(X86Register.ecx, instanceMemoryLocation); // Since expressions by default only use eax and edx, we use ecx so we have no need to store the assignment value temporarily
-                return Offset.Create(X86Register.ecx, -offset);
-            }
-            else throw new InvalidOperationException($"unable to find member '{instanceMemberLValue.Member.Lexeme}' in type '{instanceMemberLValue.Instance.ConcreteType}' or '{instanceMemberLValue.Instance.ConcreteType}' is not a struct type");
-        }
-        else if (lValue is DiscardLValue)
-        {
-            // Pass
-            return null;
-        }
-        else throw new NotSupportedException($"lvalue of type '{lValue.GetType()}' is not a supported assignment target");
-    }
-
-
-    private void CompileForError(CallExpression callExpression)
-    {
-        if (!(callExpression.Callee.ConcreteType is CallableType callableType && callableType.IsErrorable)) throw new InvalidOperationException("can only optimize error call for errorable calls");
-        for (int i = callExpression.Arguments.Count - 1; i >= 0; i--)
-        {
-            var argument = callExpression.Arguments[i];
-            CompileAsArgument(argument);
-        }
-        if (callExpression.FunctionContext != null)
-        {
-            // it is a direct call
-            _asm.Call(callExpression.FunctionContext.GetDecoratedFunctionLabel(), false);
-        }
-        else
-        {
-            // Indirect call
-            CompileToRegister(callExpression.Callee, X86Register.eax);
-            _asm.Call(X86Register.eax);
-        }
-
-    }
-
-
-    private void CompileToRegister(ExpressionBase expression, X86Register register)
-    {
-        switch (expression)
-        {
-            case CallExpression callExpression:
-                CompileToRegister(callExpression, register);
-                break;
-            case IdentifierExpression identifierExpression:
-                CompileToRegister(identifierExpression, register);
-                break;
-            case MemberAccessExpression memberAccessExpression:
-                CompileToRegister(memberAccessExpression, register);
-                break;
-            case LiteralExpression literalExpression:
-                CompileToRegister(literalExpression, register);
-                break;
-            case ReferenceExpression referenceExpression:
-                CompileToRegister(referenceExpression, register);
-                break;
-            default:
-                throw new InvalidOperationException($"Unknown expression type '{expression.GetType()}'");
-        }
-    }
-
-
-    private void CompileToRegister(CallExpression callExpression, X86Register register)
-    {
-        if (register == X86Register.edx) throw new InvalidOperationException("cannot override edx in call due to error return");
-        for(int i = callExpression.Arguments.Count - 1; i >= 0; i--)
-        {
-            var argument = callExpression.Arguments[i];
-            CompileAsArgument(argument);
-        }
-        if (callExpression.FunctionContext != null)
-        {
-            // it is a direct call
-            _asm.Call(callExpression.FunctionContext.GetDecoratedFunctionLabel(), callExpression.FunctionContext.IsImported);
-        }
-        else
-        {
-            // Indirect call
-            CompileToRegister(callExpression.Callee, X86Register.eax);
-            _asm.Call(X86Register.eax);
-        }
-        if (register != X86Register.eax)
-        {
-            if (callExpression.Callee.ConcreteType is CallableType callableType && callableType.ReturnType.IsVoidType()) return;
-            _asm.Mov(register, X86Register.eax);
-        }
-    }
-
-    private void CompileToRegister(MemberAccessExpression memberAccessExpression, X86Register register)
-    {       
-        var instanceType = memberAccessExpression.Instance.ConcreteType;
-        if (!instanceType.TryGetMemberOffsetFromStructOrReference(memberAccessExpression.MemberToAccess, out var isReferenceType, out var offset))
-        {
-            throw new InvalidOperationException($"expect left hand side of member access to be struct type but got '{memberAccessExpression.Instance.ConcreteType}' or type '{instanceType}' does not contain member '{memberAccessExpression.MemberToAccess.Lexeme}'");
-        }
-        if (isReferenceType)
-        {
-            CompileToRegister(memberAccessExpression.Instance, register);
-            _asm.Mov(register, Offset.Create(register, offset));
-            return;
-        }
-        // Since you cannot assign struct types to anything other than local variables
-        if (memberAccessExpression.Instance is not IdentifierExpression identifierExpression)
-            throw new InvalidOperationException($"unexpected expression type evaluated to struct '{memberAccessExpression.Instance.GetType()}'");
-        var lhsOffset = _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _);
-        lhsOffset.Offset -= offset;
-        _asm.Mov(register, lhsOffset);
-    }
-
-    private void CompileToRegister(IdentifierExpression identifierExpression, X86Register register)
-    {
-        if (identifierExpression.FunctionContext != null)
-        {
-            _asm.Mov(register, identifierExpression.FunctionContext.GetDecoratedFunctionLabel());
-        }
-
-        else _asm.Mov(register, _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _));
-    }
-
-    private void CompileToRegister(LiteralExpression literalExpression, X86Register register)
-    {
-        if (literalExpression.Value is int i) _asm.Mov(register, i);
-        else if (literalExpression.Value is float flt)
-        {
-            var label = _asm.AddSinglePrecisionFloatingPointData(flt);
-            _asm.Mov(register, label);
-        }
-        else if (literalExpression.Value is string str)
-        {
-            var label = _asm.AddStringData(str);
-            _asm.Mov(register, label);
-        }
-        else if (literalExpression.Value is null) _asm.Mov(register, 0);
-        else throw new InvalidOperationException($"literal of type '{literalExpression.ConcreteType}' is not supported");
-    }
-
-    private void CompileToRegister(ReferenceExpression referenceExpression, X86Register register)
-    {
-        if (referenceExpression.Instance != null)
-        {
-            CompileToRegister(referenceExpression.Instance, register);
-            if (referenceExpression.Instance.ConcreteType is not StructType instanceType)
-                throw new InvalidOperationException($"expect left hand side of member access to be struct type but got '{referenceExpression.Instance.ConcreteType}'");
-            if (!instanceType.TryGetMemberOffset(referenceExpression.MemberToAccess, out var offset))
-                throw new InvalidOperationException($"type '{instanceType}' does not contain member '{referenceExpression.MemberToAccess.Lexeme}'");
-            _asm.Lea(register, Offset.Create(register, -offset));
-            return;
-        }
-
-        var memoryLocation = _asm.GetIdentifierOffset(referenceExpression.MemberToAccess.Lexeme, out _);
-        _asm.Lea(register, memoryLocation);
-    }
-
-    #region AsAssignment
-
-    private void CompileAsAssignmentValue(RegisterOffset assignmentTarget, ExpressionBase expression)
-    {
-        switch (expression)
-        {
-            case CallExpression callExpression:
-                CompileAsAssignmentValue(assignmentTarget, callExpression);
-                break;
-            case IdentifierExpression identifierExpression:
-                CompileAsAssignmentValue(assignmentTarget, identifierExpression);
-                break;
-            case MemberAccessExpression memberAccessExpression:
-                CompileAsAssignmentValue(assignmentTarget, memberAccessExpression);
-                break;
-            case LiteralExpression literalExpression:
-                CompileAsAssignmentValue(assignmentTarget, literalExpression);
-                break;
-            case StackAllocateExpression stackAllocateExpression:
-                CompileAsAssignmentValue(assignmentTarget, stackAllocateExpression);
-                break;
-            case ReferenceExpression referenceExpression:
-                CompileAsAssignmentValue(assignmentTarget, referenceExpression);
-                break;
-            default:
-                throw new InvalidOperationException($"Unknown expression type '{expression.GetType()}'");
-        }
-    }
-
-    private void CompileAsAssignmentValue(RegisterOffset assignmentTarget, IdentifierExpression identifierExpression)
-    {
-        CompileToRegister(identifierExpression, X86Register.eax);
-        _asm.Mov(assignmentTarget, X86Register.eax);
-    }
-
-    private void CompileAsAssignmentValue(RegisterOffset assignmentTarget, MemberAccessExpression memberAccessExpression)
-    {
-        var instanceType = memberAccessExpression.Instance.ConcreteType;
-        if (!instanceType.TryGetMemberOffsetFromStructOrReference(memberAccessExpression.MemberToAccess, out var isReferenceType, out var offset))
-        {
-            throw new InvalidOperationException($"expect left hand side of member access to be struct type but got '{memberAccessExpression.Instance.ConcreteType}' or type '{instanceType}' does not contain member '{memberAccessExpression.MemberToAccess.Lexeme}'");
-        }
-        if (isReferenceType)
-        {
-            CompileToRegister(memberAccessExpression.Instance, X86Register.eax);
-            _asm.Mov(X86Register.eax, Offset.Create(X86Register.eax, offset));
-            _asm.Mov(assignmentTarget, X86Register.eax);
-            return;
-        }
-        // Since you cannot assign struct types to anything other than local variables
-        if (memberAccessExpression.Instance is not IdentifierExpression identifierExpression)
-            throw new InvalidOperationException($"unexpected expression type evaluated to struct '{memberAccessExpression.Instance.GetType()}'");
-        var lhsOffset = _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _);
-        lhsOffset.Offset -= offset;
-        _asm.Mov(X86Register.eax, lhsOffset);
-        _asm.Mov(assignmentTarget, X86Register.eax);
-    }
-
-    private void CompileAsAssignmentValue(RegisterOffset assignmentTarget, CallExpression callExpression)
-    {
-        CompileToRegister(callExpression, X86Register.eax);
-        _asm.Mov(assignmentTarget, X86Register.eax);
-    }
-
-    private void CompileAsAssignmentValue(RegisterOffset assignmentTarget, LiteralExpression literalExpression)
-    {
-        if (literalExpression.Value is int i) _asm.Mov(assignmentTarget, i);
-        else if (literalExpression.Value is float flt)
-        {
-            var label = _asm.AddSinglePrecisionFloatingPointData(flt);
-            _asm.Mov(assignmentTarget, label);
-        }
-        else if (literalExpression.Value is string str)
-        {
-            var label = _asm.AddStringData(str);
-            _asm.Mov(assignmentTarget, label);
-        }
-        else if (literalExpression.Value is null) _asm.Mov(assignmentTarget, 0);
-        else throw new InvalidOperationException($"literal of type '{literalExpression.ConcreteType}' is not supported");
-    }
-
-    private void CompileAsAssignmentValue(RegisterOffset assignmentTarget, StackAllocateExpression stackAllocateExpression)
-    {
-        // Nothing needs to be done here since the function declaration will handle reserving space for local variables 
-    }
-
-    private void CompileAsAssignmentValue(RegisterOffset assignmentTarget, ReferenceExpression referenceExpression)
-    {
-        CompileToRegister(referenceExpression, X86Register.eax);
-        _asm.Mov(assignmentTarget, X86Register.eax);
-    }
-
-    #endregion
-
-    #region AsArgument
-
-    private void CompileAsArgument(ExpressionBase expression)
-    {
-        switch (expression)
-        {
-            case CallExpression callExpression:
-                CompileAsArgument(callExpression);
-                break;
-            case IdentifierExpression identifierExpression:
-                CompileAsArgument(identifierExpression);
-                break;
-            case MemberAccessExpression memberAccessExpression:
-                CompileAsArgument(memberAccessExpression);
-                break;
-            case LiteralExpression literalExpression:
-                CompileAsArgument(literalExpression);
-                break;
-            case ReferenceExpression referenceExpression:
-                CompileAsArgument(referenceExpression);
-                break;
-            default:
-                throw new InvalidOperationException($"Unknown expression type '{expression.GetType()}'");
-        }
-    }
-
-    private void CompileAsArgument(IdentifierExpression identifierExpression)
-    {
-        var memoryLocation = _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _);
-        _asm.Push(memoryLocation);
-    }
-
-    private void CompileAsArgument(MemberAccessExpression memberAccessExpression)
-    {
-        var instanceType = memberAccessExpression.Instance.ConcreteType;
-        if (!instanceType.TryGetMemberOffsetFromStructOrReference(memberAccessExpression.MemberToAccess, out var isReferenceType, out var offset))
-        {
-            throw new InvalidOperationException($"expect left hand side of member access to be struct type but got '{memberAccessExpression.Instance.ConcreteType}' or type '{instanceType}' does not contain member '{memberAccessExpression.MemberToAccess.Lexeme}'");
-        }
-        if (isReferenceType)
-        {
-            CompileToRegister(memberAccessExpression.Instance, X86Register.eax);
-            _asm.Push(Offset.Create(X86Register.eax, offset));
-            return;
-        }
-        // Since you cannot assign struct types to anything other than local variables
-        if (memberAccessExpression.Instance is not IdentifierExpression identifierExpression)
-            throw new InvalidOperationException($"unexpected expression type evaluated to struct '{memberAccessExpression.Instance.GetType()}'");
-        var lhsOffset = _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _);
-        lhsOffset.Offset -= offset;
-        _asm.Push(lhsOffset);
-    }
-
-    private void CompileAsArgument(CallExpression callExpression)
-    {
-        CompileToRegister(callExpression, X86Register.eax);
-        // TODO: check for error to short circuit call? if so, which direction?
-        _asm.Push(X86Register.eax);
-    }
-
-    private void CompileAsArgument(LiteralExpression literalExpression)
-    {
-        if (literalExpression.Value is int i) _asm.Push(i);
-        else if (literalExpression.Value is float flt)
-        {
-            var label = _asm.AddSinglePrecisionFloatingPointData(flt);
-            _asm.Push(label);
-        }
-        else if (literalExpression.Value is string str)
-        {
-            var label = _asm.AddStringData(str);
-            _asm.Push(label);
-        }
-        else if (literalExpression.Value is null) _asm.Push(0);
-        else throw new InvalidOperationException($"literal of type '{literalExpression.ConcreteType}' is not supported");
-    }
-
-    private void CompileAsArgument(ReferenceExpression referenceExpression)
-    {
-        CompileToRegister(referenceExpression, X86Register.eax);
-        _asm.Push(X86Register.eax);
-    }
-
-
-    #endregion
-
-
-    #region Expressions
-
-    private RM CompileToPreferred(ExpressionBase expression, RM preferred)
-    {
-        switch (expression)
-        {
-            case BinaryExpression binaryExpression:
-                CompileToPreferred(binaryExpression, preferred);
-                break;
-            case CallExpression callExpression:
-                CompileToPreferred(callExpression, preferred);
-                break;
-            case IdentifierExpression identifierExpression:
-                CompileToPreferred(identifierExpression, preferred);
-                break;
-            case MemberAccessExpression memberAccessExpression:
-                CompileToPreferred(memberAccessExpression, preferred);
-                break;
-            case LiteralExpression literalExpression:
-                CompileToPreferred(literalExpression, preferred);
-                break;
-            case ReferenceExpression referenceExpression:
-                CompileToPreferred(referenceExpression, preferred);
-                break;
-            default:
-                throw new InvalidOperationException($"Unknown expression type '{expression.GetType()}'");
-        }
-    }
-
-    private RM CompileToPreferred(BinaryExpression binaryExpression, RM preferred)
-    {
-        RM first;
-        RM second;
-        if (binaryExpression.Operator == OperatorType.Division && binaryExpression.IsIntegerType())
-        {
-            preferred = Reg64.RAX;
-        }
-        if (binaryExpression.Left.Metadata.SU >= binaryExpression.Right.Metadata.SU)
-        {
-            first = CompileToPreferred(binaryExpression.Left, preferred);
-            second = CompileToPreferred(binaryExpression.Right, );
-
-        }
-    }
-
-    private RM CompileToPreferred(CallExpression callExpression, RM preferred)
-    {
-        // TODO
-    }
-
-    private RM CompileToPreferred(IdentifierExpression identifierExpression, RM preferred)
-    {
-        // TODO
-    }
-
-    private RM CompileToPreferred(MemberAccessExpression memberAccessExpression, RM preferred)
-    {
-        // TODO
-    }
-
-    private RM CompileToPreferred(LiteralExpression literalExpression, RM preferred)
-    {
-        // TODO
-    }
-
-    private RM CompileToPreferred(ReferenceExpression referenceExpression, RM preferred)
-    {
-        // TODO
-    }
-
-
-    private RM CompileToMemory(ExpressionBase expression)
-    {
-        switch (expression)
-        {
-            case BinaryExpression binaryExpression:
-                CompileToMemory(binaryExpression);
-                break;
-            case CallExpression callExpression:
-                CompileToMemory(callExpression);
-                break;
-            case IdentifierExpression identifierExpression:
-                CompileToMemory(identifierExpression);
-                break;
-            case MemberAccessExpression memberAccessExpression:
-                CompileToMemory(memberAccessExpression);
-                break;
-            case LiteralExpression literalExpression:
-                CompileToMemory(literalExpression);
-                break;
-            case ReferenceExpression referenceExpression:
-                CompileToMemory(referenceExpression);
-                break;
-            default:
-                throw new InvalidOperationException($"Unknown expression type '{expression.GetType()}'");
-        }
-    }
-
-    private RM CompileToMemory(BinaryExpression binaryExpression)
-    {
-        RM first;
-        RM second;
-        if (binaryExpression.Operator == OperatorType.Division && binaryExpression.IsIntegerType())
-        {
-            preferred = Reg64.RAX;
-        }
-        if (binaryExpression.Left.Metadata.SU >= binaryExpression.Right.Metadata.SU)
-        {
-            first = CompileToMemory(binaryExpression.Left);
-            second = CompileToMemory(binaryExpression.Right, );
-
-        }
-    }
-
-    private RM CompileToMemory(CallExpression callExpression)
-    {
-        // TODO
-    }
-
-    private RM CompileToMemory(IdentifierExpression identifierExpression)
-    {
-        // TODO
-        return _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _);
-    }
-
-    private Mem64 CompileToMemory(MemberAccessExpression memberAccessExpression)
-    {
-        // TODO
-        var instanceLocation = CompileToMemory(memberAccessExpression.Instance);
-
-        if (!memberAccessExpression.Instance.ConcreteType.TryGetMemberOffsetFromStructOrReference(memberAccessExpression.MemberToAccess, out var isReferenceType, out var offset))
-            throw new InvalidOperationException($"expect left hand side of member access to be struct type but got '{memberAccessExpression.Instance.ConcreteType}' or type '{memberAccessExpression.Instance.ConcreteType}' does not contain member '{memberAccessExpression.MemberToAccess.Lexeme}'");
-        if (instanceLocation is Mem64 mem)
-        {
-            mem.Displacement.Offset += offset;
-            return mem;
-        }
-        if (instanceLocation is Reg64 reg)
-        {
-            _asm.Add(reg, offset);
-            return reg;
-        }
-        else
-            throw new InvalidOperationException("unexpected RM type for member access");
-    }
-
-    private RM CompileToMemory(LiteralExpression literalExpression)
-    {
-        // TODO
-    }
-
-
-    private Xmm128? Compile(CallExpression callExpression)
-    {
-
-
-        // Will always return in RAX or Xmm0
-    }
-
-    private Mem64 Compile(IdentifierExpression identifierExpression)
-    {
-        return _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _);
-    }
-
-    private Immediate Compile(LiteralExpression literalExpression)
-    {
-
-    }
-
-    private Mem64 Compile(MemberAccessExpression memberAccessExpression)
-    {
-
-    }
-
-    private RM Compile(BinaryExpression binaryExpression)
-    {
-
-
-        // result always in Reg64 or Xmm128
-    }
-
-
-    private Reg64 HandleReferenceExpression(CallExpression instance, ReferenceExpression referenceExpression)
-    {
-        Compile(instance);
-        if (instance.ConcreteType is ReferenceType referenceType && referenceType.ReferencedType is StructType structType)
-        {
-            if (!structType.TryGetMemberOffset(referenceExpression.MemberToAccess, out var offset))
-                throw new InvalidOperationException($"type '{structType}' does not contain member '{referenceExpression.MemberToAccess.Lexeme}'");
-            var freeRegister = GetFreeRegister();
-            _asm.Lea(freeRegister, Mem64.Create(Reg64.RAX, offset));
-            return freeRegister;
-        }
-        else throw new InvalidOperationException("expected reference type as left hand side of member");   
-    }
-
-    private Reg64 HandleReferenceExpression(MemberAccessExpression instance, ReferenceExpression referenceExpression)
-    {
-        var mem = CompileToMemory(instance);
-        
-        if (instance.ConcreteType is ReferenceType referenceType && referenceType.ReferencedType is StructType structType)
-        {
-            if (!structType.TryGetMemberOffset(referenceExpression.MemberToAccess, out var offset))
-                throw new InvalidOperationException($"type '{structType}' does not contain member '{referenceExpression.MemberToAccess.Lexeme}'");
-            var freeRegister = GetFreeRegister();
-            _asm.Lea(freeRegister, mem);
-            _asm.Add(freeRegister, offset);
-            return freeRegister;
-        }
-        else throw new InvalidOperationException("expected reference type as left hand side of member");
-    }
-
-    private Reg64 HandleReferenceExpression(IdentifierExpression instance, ReferenceExpression referenceExpression)
-    {
-        var mem = _asm.GetIdentifierOffset(instance.Symbol.Lexeme, out _);
-
-        if (instance.ConcreteType is ReferenceType referenceType && referenceType.ReferencedType is StructType structType)
-        {
-            if (!structType.TryGetMemberOffset(referenceExpression.MemberToAccess, out var offset))
-                throw new InvalidOperationException($"type '{structType}' does not contain member '{referenceExpression.MemberToAccess.Lexeme}'");
-            var freeRegister = GetFreeRegister();
-            _asm.Lea(freeRegister, mem);
-            _asm.Add(freeRegister, offset);
-            return freeRegister;
-        }
-        else throw new InvalidOperationException("expected reference type as left hand side of member");
-    }
-
-
-
-    private RM HandleBinary(CallExpression left, CallExpression right, OperatorType operatorType)
-    {
-        // TODO
-
-        if (operatorType == OperatorType.Division && left.IsIntegerType())
-        {
-            // division requires rax and rdx
-
-            Compile(right);
-            var preservedRegister = GetCalleePreservedRegister();
-            _asm.Mov((RM64)preservedRegister, Reg64.RAX);
-            Compile(left);
-            _asm.Cqo(); // sign extend rax into rdx:rax
-            _asm.Idiv(preservedRegister);
-            return Reg64.RAX;
-        }
-        if (operatorType == OperatorType.Modulus && left.IsIntegerType())
-        {
-            // division requires rax and rdx
-
-            Compile(right);
-            var preservedRegister = GetCalleePreservedRegister();
-            _asm.Mov((RM64)preservedRegister, Reg64.RAX);
-            Compile(left);
-            _asm.Cqo(); // sign extend rax into rdx:rax
-            _asm.Idiv(preservedRegister);
-            return Reg64.RDX; // Remainder is in rdx
-        }
-
-        Compile(left);
-        var callPreservedRegister = GetCalleePreservedRegister();
-        _asm.Mov((RM64)callPreservedRegister, Reg64.RAX);
-        Compile(right);
-        
-
-
-
-    }
-
-
-
-    // TODO handle constant folding in type resolver instead
-    //private Immediate HandleBinary(LiteralExpression left, LiteralExpression right, OperatorType operatorType)
-    //{
-    //    if (left.Value is int leftInt && right.Value is int rightInt)
-    //    {
-    //        switch (operatorType)
-    //        {
-    //            case OperatorType.Addition:
-    //                return new Imm32(leftInt + rightInt);
-    //            case OperatorType.Subtraction:
-    //                return new Imm32(leftInt - rightInt);
-    //            case OperatorType.Multiplication:
-    //                return new Imm32(leftInt * rightInt);
-    //            case OperatorType.Division:
-    //                return new Imm32(leftInt / rightInt);
-    //            default:
-    //                throw new InvalidOperationException($"unsupported operator type '{operatorType}' for integer literals");
-    //        }
-    //    }
-    //    else if (left.Value is float leftFloat && right.Value is float rightFloat)
-    //    {
-    //        switch (operatorType)
-    //        {
-    //            case OperatorType.Addition:
-    //                return new Imm32(leftFloat + rightFloat);
-    //            case OperatorType.Subtraction:
-    //                return new Imm32(leftFloat - rightFloat);
-    //            case OperatorType.Multiplication:
-    //                return new Imm32(leftFloat * rightFloat);
-    //            case OperatorType.Division:
-    //                return new Imm32(leftFloat / rightFloat);
-    //            default:
-    //                throw new InvalidOperationException($"unsupported operator type '{operatorType}' for float literals");
-    //        }
-    //    }
-    //    else
-    //        throw new InvalidOperationException("only integer literals are supported for constant folding");
-    //}
-
-    private Reg64 GetFreeRegister()
-    {
-
-    }
-
-    private Reg64 GetCalleePreservedRegister()
-    {
-
-    }
-
-    private List<Register> calleeSavedRegisters = new()
-    {
-        Reg64.RBX,
-        Reg64.RBP,
-        Reg64.R12,
-        Reg64.R13,
-        Reg64.R14,
-        Reg64.R15
-    };
-
-    private List<Register> callerSavedRegisters = new()
-    {
-        Reg64.RAX,
-        Reg64.RCX,
-        Reg64.RDX,
-        Reg64.RSI,
-        Reg64.RDI,
-        Reg64.R8,
-        Reg64.R9,
-        Reg64.R10,
-        Reg64.R11
-    };
-
-    private Register HandleAddition(RM dest, RM src)
-    {
-        if (dest is Reg64 destReg)
-        {
-            _asm.Add(destReg, ToRM64OrThrow(src));
-            return destReg;
-        }
-        else if (src is Reg64 srcReg)
-        {
-            _asm.Add(srcReg, ToRM64OrThrow(dest));
-            return srcReg;
-        }
-        else if (dest is Xmm128 destXmm)
-        {
-            _asm.Addsd(destXmm, ToRM64OrThrow(src));
-            return destXmm;
-        }
-        else if (src is Xmm128 srcXmm)
-        {
-            _asm.Addsd(srcXmm, ToRM64OrThrow(dest));
-            return srcXmm;
-        }
-        else
-            throw new InvalidOperationException("at least one operand must be a register for addition");
-    }
-
-    private RM64 ToRM64OrThrow(RM rm)
-    {
-        if (rm is RM64 rm64) return rm64;
-        throw new InvalidOperationException($"expected RM64 but got '{rm.GetType()}'");
-    }
-
-    #endregion
-
-    private int GetAdditonalStackSlotsNeeded(FunctionContext functionContext)
-    {
-        foreach (var statement in functionContext.BodyStatements)
-        {
-            GatherMetadata(statement);
-        }
-        return functionContext.BodyStatements.Max(s => s.Metadata.StackSlotsNeeded);
-    }
-
+    #region Metadata Gathering
     private void GatherMetadata(StatementBase statement)
     {
         switch (statement)
@@ -1421,62 +1235,153 @@ public class MineralCompiler
         // Pass 
         // Stack allocation should not occur naturally in expression trees
     }
-}
 
+    #endregion
 
+    #region Helpers
 
-public abstract class MemoryLocation
-{
-    public abstract bool IsRegister { get; }
-    public abstract bool IsMemory { get; }
-    public abstract bool IsLabel { get; }
-
-    public static RegisterMemoryLocation Register(X86Register register) => new RegisterMemoryLocation(register);
-    public static StackMemoryLocation Memory(RegisterOffset registerOffset) => new StackMemoryLocation(registerOffset);
-    public static DirectMemoryLocation Direct(string label) => new DirectMemoryLocation(label); 
-}
-
-public class RegisterMemoryLocation : MemoryLocation
-{
-    public RegisterMemoryLocation(X86Register register)
+    private void HandleRMForPush(RM rm, Action<Mem64> handleMemory, Action<Reg64> handleRegister, Action<Xmm128> handleXmm, Action<Imm32> handleImm32)
     {
-        Register = register;
+        if (rm is Reg64 reg)
+            handleRegister(reg);
+        else if (rm is Mem64 mem)
+            handleMemory(mem);
+        else if (rm is Xmm128 xmm)
+            handleXmm(xmm);
+        else if (rm is Imm32 imm32)
+            handleImm32(imm32);
+        else
+            throw new InvalidOperationException($"unexpected RM type '{rm.GetType()}'");
     }
-    public X86Register Register { get; set; }
 
-
-    public override bool IsRegister => true;
-    public override bool IsMemory => false;
-    public override bool IsLabel => false;
-}
-
-public class StackMemoryLocation : MemoryLocation
-{
-    public StackMemoryLocation(RegisterOffset registerOffset)
+    private void HandleRM(RM rm, Action<Mem64> handleMemory, Action<Xmm128> handleXmm)
     {
-        RegisterOffset = registerOffset;
+        if (rm is Mem64 mem)
+            handleMemory(mem);
+        else if (rm is Xmm128 xmm)
+            handleXmm(xmm);
+        else
+            throw new InvalidOperationException($"unexpected RM type '{rm.GetType()}'");
     }
-    public RegisterOffset RegisterOffset { get; set; }
 
-
-    public override bool IsRegister => false;
-    public override bool IsMemory => true;
-    public override bool IsLabel => false;
-}
-
-public class DirectMemoryLocation : MemoryLocation
-{
-    public DirectMemoryLocation(string label)
+    private Mem64 HandleRM(RM rm, Func<Mem64, Mem64> handleMemory, Func<Reg64, Mem64> handleRegister)
     {
-        Label = label;
+        if (rm is Reg64 reg)
+            return handleRegister(reg);
+        else if (rm is Mem64 mem)
+            return handleMemory(mem);
+        else
+            throw new InvalidOperationException($"unexpected RM type '{rm.GetType()}'");
     }
-    public string Label { get; set; }
+
+    private Reg64 HandleRM(RM rm, Func<Mem64, Reg64> handleMemory, Func<Reg64, Reg64> handleRegister)
+    {
+        if (rm is Reg64 reg)
+            return handleRegister(reg);
+        else if (rm is Mem64 mem)
+            return handleMemory(mem);
+        else
+            throw new InvalidOperationException($"unexpected RM type '{rm.GetType()}'");
+    }
 
 
-    public override bool IsRegister => false;
-    public override bool IsMemory => false;
-    public override bool IsLabel => true;
+    private void HandleRM(RM rm, Action<Mem64> handleMemory, Action<Reg64> handleRegister, Action<Imm32> handleImm32)
+    {
+        if (rm is Reg64 reg)
+            handleRegister(reg);
+        else if (rm is Mem64 mem)
+            handleMemory(mem);
+        else if (rm is Imm32 imm32)
+            handleImm32(imm32);
+        else
+            throw new InvalidOperationException($"unexpected RM type '{rm.GetType()}'");
+    }
+
+
+
+
+    private int GetAdditonalStackSlotsNeeded(FunctionContext functionContext)
+    {
+        foreach (var statement in functionContext.BodyStatements)
+        {
+            GatherMetadata(statement);
+        }
+        return functionContext.BodyStatements.Max(s => s.Metadata.StackSlotsNeeded);
+    }
+
+    #endregion
 }
 
 
 
+
+
+public static class OperatorFactory
+{
+
+    public static void Handle<TReg, TImm>(TReg left, RM right, Action<TReg, Mem64> memToReg, Action<TReg, TReg> regToReg, Action<TReg, TImm> immToReg) where TReg : Register where TImm : Immediate
+    {
+        if (right is Mem64 mem) memToReg(left, mem);
+        else if (right is TReg reg) regToReg(left, reg);
+        else if (right is TImm immNN) immToReg(left, immNN);
+        else throw new InvalidOperationException($"unexpected right RM type '{right.GetType()}'");
+    }
+
+    public static void Handle<TReg, TImm>(RM rmLeft, RM right, Func<Mem64, TReg> moveLeftToReg, Func<TReg, TReg> moveRegLeftToReg, Func<TImm, TReg> moveImmLeftToReg, Action<TReg, Mem64> memToReg, Action<TReg, TReg> regToReg, Action<TReg, TImm> immToReg) where TReg : Register where TImm : Immediate
+    {
+        TReg left;
+        if (rmLeft is Mem64 leftMem)
+            left = moveLeftToReg(leftMem);
+        else if (rmLeft is TReg leftAsReg) left = moveRegLeftToReg(leftAsReg);
+        else if (rmLeft is TImm imm) left = moveImmLeftToReg(imm);
+        else throw new InvalidOperationException($"unexpected left RM type '{rmLeft.GetType()}'");
+        if (right is Mem64 mem) memToReg(left, mem);
+        else if (right is TReg reg) regToReg(left, reg);
+        else if (right is TImm immNN) immToReg(left, immNN);
+        else throw new InvalidOperationException($"unexpected right RM type '{right.GetType()}'");
+    }
+
+
+
+
+    public static void HandleCommutative<TReg, TImm>(RM rmLeft, RM right, 
+        Func<Mem64, TReg> moveLeftToReg,
+        Func<TImm, TReg> moveImmLeftToReg, 
+        Action<TReg, Mem64> memToReg, 
+        Action<TReg, TReg> regToReg, 
+        Action<TReg, TImm> immToReg,
+        Action<TImm, TReg> regToImm,
+        Action<Mem64, TReg> regToMem) where TReg : Register where TImm : Immediate
+    {
+
+        // First, if it is memory to memory, dump left hand side to a register
+        if (rmLeft is Mem64 leftAsMem)
+        {
+            if (right is Mem64)
+                rmLeft = moveLeftToReg(leftAsMem);
+            else if (right is Imm32)
+                rmLeft = moveLeftToReg(leftAsMem);
+        }
+        else if (rmLeft is TImm leftAsImm && right is Mem64)
+            rmLeft = moveImmLeftToReg(leftAsImm);
+        if (rmLeft is TReg left)
+        {
+            if (right is Mem64 mem) memToReg(left, mem);
+            else if (right is TReg reg) regToReg(left, reg);
+            else if (right is TImm immNN) immToReg(left, immNN);
+            else throw new InvalidOperationException($"unexpected right RM type '{right.GetType()}'");
+        }
+        else if (rmLeft is Mem64 memLeft)
+        {
+            if (right is TReg reg) regToMem(memLeft, reg);
+            else throw new InvalidOperationException($"unexpected right RM type '{right.GetType()}'");
+        }
+        else if (rmLeft is TImm immLeft)
+        {
+            if (right is TReg reg) regToImm(immLeft, reg);
+            else throw new InvalidOperationException($"unexpected right RM type '{right.GetType()}'");
+        }
+        else throw new InvalidOperationException($"unexpected left RM type '{rmLeft.GetType()}'");
+    }
+
+}
