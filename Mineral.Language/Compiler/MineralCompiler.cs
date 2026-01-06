@@ -317,12 +317,16 @@ public class MineralCompiler
         {
             case CallExpression callExpression:
                 return Compile(callExpression, desiredReg, desiredXmm);
+            case BinaryExpression binaryExpression:
+                return Compile(binaryExpression);
             case IdentifierExpression identifierExpression:
                 return Compile(identifierExpression);
             case MemberAccessExpression memberAccessExpression:
                 return Compile(memberAccessExpression, desiredReg, desiredXmm);
             case LiteralExpression literalExpression:
                 return Compile(literalExpression);
+            case ReferenceExpression referenceExpression:
+                return Compile(referenceExpression, desiredReg, desiredXmm);
             default:
                 throw new InvalidOperationException($"Unknown expression type '{expression.GetType()}'");
         }
@@ -337,15 +341,13 @@ public class MineralCompiler
         if (literalExpression.Value is int i)
             return Imm32.Create(i);
         else if (literalExpression.Value is float flt)
-        {
             return _asm.AddFloatingPoint(flt);
-        }
-        else if (literalExpression.Value is string)
-            literalExpression.TagAsType(new ConcreteType(BuiltinType.String));
+        else if (literalExpression.Value is string str)
+            return _asm.AddString(str);
         else if (literalExpression.Value is null)
-            literalExpression.TagAsType(new NullPointerType());
+            return Imm32.Create(0);
         else
-            errors.Add(literalExpression, $"Unknown literal type for value '{literalExpression.Value}'");
+            throw new InvalidOperationException($"Unknown literal type for value '{literalExpression.Value}'");
     }
 
     private Mem64 Compile(MemberAccessExpression memberAccessExpression, Reg64 desiredReg, Xmm128 desiredXmm)
@@ -416,7 +418,9 @@ public class MineralCompiler
                 });
     }
 
-    private RM Compile(BinaryExpression binaryExpression)
+    #region Binary
+
+    private Reg64 Compile(BinaryExpression binaryExpression)
     {
         // Binary operations always compute RHS first to keep it simple and avoid too much register swapping
         var op = binaryExpression.Operator;
@@ -520,10 +524,9 @@ public class MineralCompiler
         throw new InvalidOperationException("unexpected binary case");
     }
 
-
     #region Binary Helpers
 
-    private RM HandleDivision(BinaryExpression binaryExpression, bool spillRightResult)
+    private Reg64 HandleDivision(BinaryExpression binaryExpression, bool spillRightResult)
     {
         var op = binaryExpression.Operator;
         var leftReg = Reg64.RAX;
@@ -647,10 +650,10 @@ public class MineralCompiler
 
     }
 
-    private RM HandleOperator(BinaryExpression binaryExpression, Reg64 leftReg, Reg64 rightReg, Xmm128 leftXmm, Xmm128 rightXmm, bool spillRightResult)
+    private Reg64 HandleOperator(BinaryExpression binaryExpression, Reg64 leftReg, Reg64 rightReg, Xmm128 leftXmm, Xmm128 rightXmm, bool spillRightResult)
     {
         var op = binaryExpression.Operator;
-        RM rmReturn = leftReg;
+        Reg64 rmReturn = leftReg;
         var rmRight = Compile(binaryExpression.Right, rightReg, rightXmm);
 
         if (spillRightResult)
@@ -690,7 +693,7 @@ public class MineralCompiler
                 (dest, src) => _asm.Sub(dest, (RM64)src),
                 (reg, imm) => _asm.Sub(reg, imm.Value));
 
-           
+
         }
         else if (op == OperatorType.Addition)
         {
@@ -816,7 +819,7 @@ public class MineralCompiler
         else throw new InvalidOperationException($"operator type '{op}' is not supported");
 
         if (spillRightResult) FreeLastUsedStackSlot();
-        if(rmReturn != null)
+        if (rmReturn != null)
         {
             // then we still need to test for the branch
             var falseLabel = _asm.CreateUniqueLabel("CTST_");
@@ -957,6 +960,9 @@ public class MineralCompiler
 
     #endregion
 
+    #endregion
+
+    #region Call
     private RM Compile(CallExpression callExpression, Reg64 desiredReg, Xmm128 desiredXmm)
     {
         // Will always return in RAX or Xmm0, then move to desired reg
@@ -983,7 +989,7 @@ public class MineralCompiler
                     _asm.Sub(Reg64.RSP, 8);
                     _asm.Movq(Mem64.Create(Reg64.RSP), Xmm128.XMM0);
                 },
-                (imm) => _asm.Push(imm.Value));        
+                (imm) => _asm.Push(imm.Value));
         }
         if (callExpression.FunctionContext != null)
         {
@@ -1057,6 +1063,9 @@ public class MineralCompiler
                 throw new NotSupportedException("general register arguments not supported past parameter 4");
         }
     }
+
+    #endregion
+   
 
     #endregion
 
@@ -1384,4 +1393,11 @@ public static class OperatorFactory
         else throw new InvalidOperationException($"unexpected left RM type '{rmLeft.GetType()}'");
     }
 
+}
+
+internal class CompilationUnit
+{
+    private Imm8? _imm8;
+    private Imm32? _imm32;
+    private RM rm;
 }
