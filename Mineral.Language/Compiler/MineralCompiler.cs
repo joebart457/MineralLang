@@ -136,20 +136,27 @@ public class MineralCompiler
 
     private void Compile(ReturnStatement returnStatement)
     {
-        var rm = Compile(returnStatement.ValueToReturn, Reg64.RAX, Xmm128.XMM0);
-        if (returnStatement.ValueToReturn.IsFloatingPointType())
+        var rm = CompileToRMOrImmediate(returnStatement.ValueToReturn, Reg64.RAX, Xmm128.XMM0);
+        if (returnStatement.ValueToReturn.IsFloat32())
         {
-            HandleRM(rm,
+            HandleRMOrImmediate(rm,
                 (mem) => _asm.Movss(Xmm128.XMM0, mem),
-                (xmm) => _asm.Movaps(Xmm128.XMM0, (RM128)xmm));
+                (xmm) => _asm.MovIfNeeded(Xmm128.XMM0, xmm));
         }
-        else
+        else if (returnStatement.ValueToReturn.IsFloat64())
         {
-            HandleRM(rm,
+            HandleRMOrImmediate(rm,
+                (mem) => _asm.Movsd(Xmm128.XMM0, mem),
+                (xmm) => _asm.MovIfNeeded(Xmm128.XMM0, xmm));
+        }
+        else if (returnStatement.ValueToReturn.IsIntegerType())
+        {
+            HandleRMOrImmediate(rm,
                 (mem) => _asm.Mov(Reg64.RAX, mem),
-                (reg) => _asm.MovIfNeeded(Reg64.RAX, reg),
+                (Reg64 reg) => _asm.MovIfNeeded(Reg64.RAX, reg),
                 (imm) => _asm.Mov(Reg64.RAX, imm));
         }
+        else throw new InvalidOperationException($"unexpected return type during code generation '{returnStatement.ValueToReturn.ConcreteType}'");
 
         if (_ctx.IsErrorable) _asm.Xor(Reg64.RDX, (RM64)Reg64.RDX); // Zero out error before returning value
         _asm.TearDownStackFrame();
@@ -158,11 +165,11 @@ public class MineralCompiler
 
     private void Compile(ErrorStatement errorStatement)
     {
-        var rm = Compile(errorStatement.ErrorToReturn, Reg64.RDX, Xmm128.XMM0);
-        HandleRM(rm,
+        var rm = CompileToRMOrImmediate(errorStatement.ErrorToReturn, Reg64.RDX, Xmm128.XMM0);
+        HandleRMOrImmediate(rm,
             (mem) => _asm.Mov(Reg64.RDX, mem),
-            (reg) => _asm.MovIfNeeded(Reg64.RDX, reg),
-            (imm) => _asm.Mov(Reg64.RDX, imm));
+            (Reg64 reg) => _asm.MovIfNeeded(Reg64.RDX, reg),
+            (imm) => _asm.Mov(Reg64.RDX, imm)); // if we ever make integer types errorable
 
         _asm.TearDownStackFrame();
         _asm.Ret();
@@ -170,7 +177,6 @@ public class MineralCompiler
 
     private void Compile(ConditionalStatement conditionalStatement)
     {
-
         var thenBlock = () =>
         {
             foreach (var stmt in conditionalStatement.ThenBlock)
@@ -195,8 +201,7 @@ public class MineralCompiler
         var regToTest = Reg64.RAX;
         HandleRM(rmCondition,
             (mem) => _asm.Mov(regToTest, mem),
-            (reg) => _asm.MovIfNeeded(regToTest, reg),
-            (imm) => _asm.Mov(regToTest, imm));
+            (reg) => _asm.MovIfNeeded(regToTest, reg));
 
 
         var falseLabel = _asm.CreateUniqueLabel("CTST_");
@@ -212,63 +217,54 @@ public class MineralCompiler
 
     private void Compile(AssignmentStatement assignmentStatement)
     {
-        var errorTarget = assignmentStatement.ErrorTarget;
-        if (errorTarget == null && assignmentStatement.Value is CallExpression callExpression && callExpression.Callee.ConcreteType is CallableType callableType && callableType.ReturnType.IsVoidType() && callableType.IsErrorable)
+        var rmValue = CompileToRMOrImmediate(assignmentStatement.Value, Reg64.RAX, Xmm128.XMM0);
+        var assignmentTarget = CompileAndReturnAssignmentTargetFromLValue(assignmentStatement.AssignmentTarget, Reg64.RCX);
+        if (assignmentTarget == null) { }
+        else if (assignmentStatement.AssignmentTarget.IsFloat32())
         {
-            errorTarget = assignmentStatement.AssignmentTarget;
-            Compile(callExpression, Reg64.RAX, Xmm128.XMM0); // ??? TODO
+            HandleRMOrImmediate(rmValue,
+                (mem) =>
+                {
+                    _asm.Mov(Reg64.RAX, mem);
+                    _asm.Mov(assignmentTarget, Reg64.RAX);
+                },
+                (reg) => _asm.Movss(assignmentTarget, reg));
         }
-        else
+        else if (assignmentStatement.AssignmentTarget.IsFloat64())
         {
-            var rmValue = Compile(assignmentStatement.Value, Reg64.RAX, Xmm128.XMM0);
-            var assignmentTarget = CompileAndReturnAssignmentTargetFromLValue(assignmentStatement.AssignmentTarget, Reg64.RCX);
+            HandleRMOrImmediate(rmValue,
+                (mem) =>
+                {
+                    _asm.Mov(Reg64.RAX, mem);
+                    _asm.Mov(assignmentTarget, Reg64.RAX);
+                },
+                (reg) => _asm.Movsd(assignmentTarget, reg));
+        }
+        else if (assignmentStatement.AssignmentTarget.IsIntegerType())
+        {
+            HandleRMOrImmediate(rmValue,
+                (mem) =>
+                {
+                    _asm.Mov(Reg64.RAX, mem);
+                    _asm.Mov(assignmentTarget, Reg64.RAX);
+                },
+                (reg) => _asm.Mov(assignmentTarget, reg),
+                (imm) => _asm.Mov(assignmentTarget, imm));
+        }
+        else throw new InvalidOperationException($"unexpected assignment of type '{assignmentStatement.Value.ConcreteType}' to '{assignmentStatement.AssignmentTarget.ConcreteType}'");
 
-            if (assignmentTarget != null)
+
+
+        // Errors returned in RDX
+        var errorTarget = assignmentStatement.ErrorTarget;
+        if (errorTarget != null)
+        {
+            var errorTargetMemoryLocation = CompileAndReturnAssignmentTargetFromLValue(errorTarget, Reg64.RDX);
+
+            if (errorTargetMemoryLocation != null)
             {
-                if (assignmentStatement.AssignmentTarget.IsFloatingPointType())
-                {
-                    HandleRM(rmValue,
-                        (mem) =>
-                        {
-                            _asm.Movss(Xmm128.XMM0, mem);
-                            _asm.Movss(assignmentTarget, Xmm128.XMM0);
-                        },
-                        (Xmm128 xmm) => _asm.Movss(assignmentTarget, xmm));
-                }
-                else
-                {
-                    HandleRM(rmValue,
-                        (mem) =>
-                        {
-                            _asm.Mov(Reg64.RAX, mem);
-                            _asm.Mov(assignmentTarget, Reg64.RAX);
-                        },
-                        (reg) => _asm.Mov(assignmentTarget, reg),
-                        (imm) => _asm.Mov(assignmentTarget, imm));
-                }
-            }
-
-
-
-
-            // Errors returned in edx
-            if (errorTarget != null)
-            {
-                var errorTargetMemoryLocation = CompileAndReturnAssignmentTargetFromLValue(errorTarget, Reg64.RDX);
-
-                if (errorTargetMemoryLocation != null)
-                {
-                    HandleRM(rmValue,
-                       (mem) =>
-                       {
-                           _asm.Mov(Reg64.RDX, mem);
-                           _asm.Mov(errorTargetMemoryLocation, Reg64.RDX);
-                       },
-                       (reg) => _asm.Mov(errorTargetMemoryLocation, reg),
-                       (imm) => _asm.Mov(errorTargetMemoryLocation, imm));
-                } // else pass for discard
-            }
-
+                _asm.Mov(errorTargetMemoryLocation, Reg64.RDX);
+            } // else pass for discard
         }
     }
 
@@ -436,11 +432,38 @@ public class MineralCompiler
 
     #region Binary
 
-    private Reg64 Compile(BinaryExpression binaryExpression)
+    private RM Compile(BinaryExpression binaryExpression)
+    {
+        // Here it is assumed binary expressions can only have operands with equal types
+        if (!binaryExpression.Left.ConcreteType.IsEqualTo(binaryExpression.Right.ConcreteType))
+            throw new InvalidOperationException($"binary {binaryExpression.Operator} is not supported between types '{binaryExpression.Left.ConcreteType}' and '{binaryExpression.Right.ConcreteType}'");
+        if (binaryExpression.Left.IsIntegerType()) return CompileIntegerResult(binaryExpression);
+        else if (binaryExpression.Left.IsFloat32()) return CompileFloat32Result(binaryExpression);
+        else if (binaryExpression.Left.IsFloat64()) return CompileFloat64Result(binaryExpression);
+        else throw new InvalidOperationException($"unexpected lhs type '{binaryExpression.Left.ConcreteType}'");
+    }
+
+    private void CompileAsConditionalBlock(BinaryExpression binaryExpression, Action ifBlock, Action elseBlock)
+    {
+        // Here it is assumed binary expressions can only have operands with equal types
+        if (!binaryExpression.Left.ConcreteType.IsEqualTo(binaryExpression.Right.ConcreteType))
+            throw new InvalidOperationException($"binary {binaryExpression.Operator} is not supported between types '{binaryExpression.Left.ConcreteType}' and '{binaryExpression.Right.ConcreteType}'");
+        if (binaryExpression.Left.IsIntegerType()) CompileIntegerResultAsConditionalBlock(binaryExpression, ifBlock, elseBlock);
+        else if (binaryExpression.Left.IsFloat32()) CompileFloat32ResultAsConditionalBlock(binaryExpression, ifBlock, elseBlock);
+        else if (binaryExpression.Left.IsFloat64()) CompileFloat64ResultAsConditionalBlock(binaryExpression, ifBlock, elseBlock);
+        else throw new InvalidOperationException($"unexpected lhs type '{binaryExpression.Left.ConcreteType}'");
+    }
+
+
+    #region Binary Helpers
+
+    #region Integer
+
+    private Reg64 CompileIntegerResult(BinaryExpression binaryExpression)
     {
         // Binary operations always compute RHS first to keep it simple and avoid too much register swapping
         var op = binaryExpression.Operator;
-        
+
         // Case 1: Lhs = CALL, Rhs = NonCall
         if (binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
         {
@@ -488,7 +511,7 @@ public class MineralCompiler
         throw new InvalidOperationException("unexpected binary case");
     }
 
-    private void CompileAsConditionalBlock(BinaryExpression binaryExpression, Action thenBlock, Action elseBlock)
+    private void CompileIntegerResultAsConditionalBlock(BinaryExpression binaryExpression, Action thenBlock, Action elseBlock)
     {
         // Binary operations always compute RHS first to keep it simple and avoid too much register swapping
         var op = binaryExpression.Operator;
@@ -501,7 +524,7 @@ public class MineralCompiler
                 HandleDivision(binaryExpression, true, thenBlock, elseBlock);
 
             else HandleOperator(binaryExpression, Reg64.RAX, Reg64.RCX, Xmm128.XMM0, Xmm128.XMM1, true, thenBlock, elseBlock);
-
+            return;
         }
 
         // Case 2: Lhs = NonCall, Rhs = CALL
@@ -512,7 +535,7 @@ public class MineralCompiler
                 HandleDivision(binaryExpression, false, thenBlock, elseBlock);
 
             else HandleOperator(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false, thenBlock, elseBlock);
-
+            return;
         }
 
         // Case 3: Lhs = CALL, Rhs = CALL
@@ -523,7 +546,7 @@ public class MineralCompiler
                 HandleDivision(binaryExpression, true, thenBlock, elseBlock);
 
             else HandleOperator(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, true, thenBlock, elseBlock);
-
+            return;
         }
 
         // Case 3: Lhs = NonCall, Rhs = NonCall
@@ -534,13 +557,12 @@ public class MineralCompiler
                 HandleDivision(binaryExpression, false, thenBlock, elseBlock);
 
             else HandleOperator(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false, thenBlock, elseBlock);
+            return;
 
         }
-
         throw new InvalidOperationException("unexpected binary case");
     }
 
-    #region Binary Helpers
 
     private Reg64 HandleDivision(BinaryExpression binaryExpression, bool spillRightResult)
     {
@@ -554,20 +576,16 @@ public class MineralCompiler
             HandleRMOrImmediate(rmRight,
                 (mem) =>
                 {
-                    if (mem.Register != Reg64.RBP)
-                    {
-                        // If register does not persist accross calls
-                        _asm.Mov(rightReg, mem);
-                        _asm.Mov(interm, rightReg);
-                        rmRight = new RMOrImmediate(interm);
-                    }
+                    if (mem is MemRegDisp memDisp && memDisp.Register == Reg64.RBP)
+                        return;
+                    // If register does not persist accross calls
+                    _asm.Mov(rightReg, mem);
+                    _asm.Mov(interm, rightReg);
+                    rmRight = new RMOrImmediate(interm);
 
                 },
                 (reg) => { _asm.Mov(interm, reg); rmRight = new RMOrImmediate(interm); },
                 (Imm32 imm) => {
-                    // Pass since immediates persist always
-                },
-                (Imm8 imm) => {
                     // Pass since immediates persist always
                 });
         }
@@ -577,8 +595,7 @@ public class MineralCompiler
         HandleRMOrImmediate(rmLeft,
             (mem) => _asm.Mov(leftReg, mem),
             (reg) => _asm.MovIfNeeded(leftReg, reg),
-            (Imm32 imm) => _asm.Mov(leftReg, imm),
-            (Imm8 imm) => throw new InvalidOperationException("unsupported division by imm8"));
+            (Imm32 imm) => _asm.Mov(leftReg, imm));
 
         OperatorFactory.Handle(
             leftReg, rmRight,
@@ -630,20 +647,15 @@ public class MineralCompiler
             HandleRMOrImmediate(rmRight,
                 (mem) =>
                 {
-                    if (mem.Register != Reg64.RBP)
-                    {
-                        // If register does not persist accross calls
-                        _asm.Mov(rightReg, mem);
-                        _asm.Mov(interm, rightReg);
-                        rmRight = new RMOrImmediate(interm);
-                    }
-
+                    if (mem is MemRegDisp memDisp && memDisp.Register == Reg64.RBP)
+                        return;
+                    // If register does not persist accross calls
+                    _asm.Mov(rightReg, mem);
+                    _asm.Mov(interm, rightReg);
+                    rmRight = new RMOrImmediate(interm);
                 },
                 (reg) => { _asm.Mov(interm, reg); rmRight = new RMOrImmediate(interm); },
                 (Imm32 imm) => {
-                    // Pass since immediates persist always
-                },
-                (Imm8 imm) => {
                     // Pass since immediates persist always
                 });
         }
@@ -656,8 +668,7 @@ public class MineralCompiler
             HandleRMOrImmediate(rmLeft,
                 (mem) => _asm.Mov(leftReg, mem),
                 (reg) => _asm.MovIfNeeded(leftReg, reg),
-                (Imm32 imm) => _asm.Mov(leftReg, imm),
-                (Imm8 imm) => _asm.Mov(leftReg.ToReg8(), imm.Value)); 
+                (Imm32 imm) => _asm.Mov(leftReg, imm)); 
 
             OperatorFactory.Handle(
                 leftReg, rmRight,
@@ -698,7 +709,7 @@ public class MineralCompiler
         else if (op == OperatorType.Equality)
             rmReturn = HandleConditional(leftReg, rmLeft, rmRight, ConditionCodes.NE, "CE", "CE_END");
         else if (op == OperatorType.NotEqual)
-            rmReturn = HandleConditional(leftReg, rmLeft, rmRight, ConditionCodes.GE, "CNE", "CNE_END");
+            rmReturn = HandleConditional(leftReg, rmLeft, rmRight, ConditionCodes.E, "CNE", "CNE_END");
         else throw new InvalidOperationException($"operator type '{op}' is not supported");
 
         if (spillRightResult) FreeLastUsedStackSlot();
@@ -717,20 +728,15 @@ public class MineralCompiler
             HandleRMOrImmediate(rmRight,
                 (mem) =>
                 {
-                    if (mem.Register != Reg64.RBP)
-                    {
-                        // If register does not persist accross calls
-                        _asm.Mov(rightReg, mem);
-                        _asm.Mov(interm, rightReg);
-                        rmRight = new RMOrImmediate(interm);
-                    }
-
+                    if (mem is MemRegDisp memDisp && memDisp.Register == Reg64.RBP)
+                        return;
+                    // If register does not persist accross calls
+                    _asm.Mov(rightReg, mem);
+                    _asm.Mov(interm, rightReg);
+                    rmRight = new RMOrImmediate(interm);
                 },
                 (reg) => { _asm.Mov(interm, reg); rmRight = new RMOrImmediate(interm); },
                 (Imm32 imm) => {
-                    // Pass since immediates persist always
-                },
-                (Imm8 imm) => {
                     // Pass since immediates persist always
                 });
         }
@@ -743,8 +749,7 @@ public class MineralCompiler
             HandleRMOrImmediate(rmLeft,
                 (mem) => _asm.Mov(leftReg, mem),
                 (reg) => _asm.MovIfNeeded(leftReg, reg),
-                (Imm32 imm) => _asm.Mov(leftReg, imm),
-                (Imm8 imm) => _asm.Mov(leftReg.ToReg8(), imm.Value));
+                (Imm32 imm) => _asm.Mov(leftReg, imm));
 
             OperatorFactory.Handle(
                 leftReg, rmRight,
@@ -785,7 +790,7 @@ public class MineralCompiler
         else if (op == OperatorType.Equality)
             rmReturn = HandleConditionalBranch(leftReg, rmLeft, rmRight, ConditionCodes.NE, "CE", "CE_END", thenBlock, elseBlock);
         else if (op == OperatorType.NotEqual)
-            rmReturn = HandleConditionalBranch(leftReg, rmLeft, rmRight, ConditionCodes.GE, "CNE", "CNE_END", thenBlock, elseBlock);
+            rmReturn = HandleConditionalBranch(leftReg, rmLeft, rmRight, ConditionCodes.E, "CNE", "CNE_END", thenBlock, elseBlock);
         else throw new InvalidOperationException($"operator type '{op}' is not supported");
 
         if (spillRightResult) FreeLastUsedStackSlot();
@@ -816,7 +821,7 @@ public class MineralCompiler
                     },
                     (reg) =>
                     {
-                        if (leftReg != reg) _asm.Mov(leftReg, (RM64)reg);
+                        _asm.MovIfNeeded(leftReg, reg);
                         return leftReg;
                     },
                     (imm) =>
@@ -865,7 +870,6 @@ public class MineralCompiler
         return leftReg;
     }
 
-
     private Reg64? HandleConditionalBranch(Reg64 leftReg, RMOrImmediate rmLeft, RMOrImmediate rmRight, byte conditionCode, string labelPrefix, string endLabelPrefix, Action ifBlock, Action elseBlock)
     {
         // Note: condition code must be inverted for this logic to work
@@ -878,7 +882,7 @@ public class MineralCompiler
                     },
                     (reg) =>
                     {
-                        if (leftReg != reg) _asm.Mov(leftReg, (RM64)reg);
+                        _asm.MovIfNeeded(leftReg, reg);
                         return leftReg;
                     },
                     (imm) =>
@@ -926,7 +930,681 @@ public class MineralCompiler
                     });
         return null;
     }
+    #endregion Integer
 
+    #region Float32
+
+    private RM CompileFloat32Result(BinaryExpression binaryExpression)
+    {
+        // Binary operations always compute RHS first to keep it simple and avoid too much register swapping
+        var op = binaryExpression.Operator;
+
+        // Case 1: Lhs = CALL, Rhs = NonCall
+        if (binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+            return HandleOperatorFloat32(binaryExpression, Reg64.RAX, Reg64.RCX, Xmm128.XMM0, Xmm128.XMM1, true);
+
+        // Case 2: Lhs = NonCall, Rhs = CALL
+        if (!binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+            return HandleOperatorFloat32(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false);
+
+        // Case 3: Lhs = CALL, Rhs = CALL
+        if (binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+            return HandleOperatorFloat32(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, true);
+
+        // Case 3: Lhs = NonCall, Rhs = NonCall
+        if (!binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+            return HandleOperatorFloat32(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false);
+
+        throw new InvalidOperationException("unexpected binary case");
+    }
+
+    private void CompileFloat32ResultAsConditionalBlock(BinaryExpression binaryExpression, Action thenBlock, Action elseBlock)
+    {
+        // Binary operations always compute RHS first to keep it simple and avoid too much register swapping
+        var op = binaryExpression.Operator;
+
+        // Case 1: Lhs = CALL, Rhs = NonCall
+        if (binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        {
+            HandleOperatorFloat32(binaryExpression, Reg64.RAX, Reg64.RCX, Xmm128.XMM0, Xmm128.XMM1, true, thenBlock, elseBlock);
+            return;
+        }
+
+        // Case 2: Lhs = NonCall, Rhs = CALL
+        if (!binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        {
+            HandleOperatorFloat32(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false, thenBlock, elseBlock);
+            return;
+        }
+
+        // Case 3: Lhs = CALL, Rhs = CALL
+        if (binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        {
+            HandleOperatorFloat32(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, true, thenBlock, elseBlock);
+            return;
+        }
+
+        // Case 3: Lhs = NonCall, Rhs = NonCall
+        if (!binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        {
+            HandleOperatorFloat32(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false, thenBlock, elseBlock);
+            return;
+
+        }
+        throw new InvalidOperationException("unexpected binary case");
+    }
+
+    private RM HandleOperatorFloat32(BinaryExpression binaryExpression, Reg64 leftReg, Reg64 rightReg, Xmm128 leftXmm, Xmm128 rightXmm, bool spillRightResult)
+    {
+        var op = binaryExpression.Operator;
+        RM rmReturn = leftXmm;
+        var rmRight = CompileToRMOrImmediate(binaryExpression.Right, rightReg, rightXmm);
+
+        if (spillRightResult)
+        {
+            var interm = NextAvailableLocalStackSlot();
+            HandleRMOrImmediate(rmRight,
+                (mem) =>
+                {
+                    if (mem is MemRegDisp memDisp && memDisp.Register == Reg64.RBP)
+                    {
+                        return;
+                    }
+                    _asm.Mov(rightReg , mem);
+                    _asm.Mov(interm, rightReg);
+                    rmRight = new RMOrImmediate(interm);
+
+                },
+                (Xmm128 reg) => 
+                { 
+                    _asm.Movss(interm, reg); 
+                    rmRight = new RMOrImmediate(interm);
+                });
+        }
+
+        var rmLeft = CompileToRMOrImmediate(binaryExpression.Left, leftReg, leftXmm);
+
+        if (op == OperatorType.Division)
+        {
+            // Ensure lhs is in a xmm register
+            HandleRMOrImmediate(rmLeft,
+                (mem) => _asm.Movss(leftXmm, mem),
+                (Xmm128 reg) => _asm.MovIfNeeded(leftXmm, reg));
+
+            OperatorFactory.Handle(
+                leftXmm, rmRight,
+                (Xmm128 reg, Mem mem) => _asm.Divss(reg, mem),
+                (dest, src) => _asm.Divss(dest, src));
+        }
+        else if (op == OperatorType.Subtraction)
+        {
+            // Ensure lhs is in a xmm register
+            HandleRMOrImmediate(rmLeft,
+                (mem) => _asm.Movss(leftXmm, mem),
+                (Xmm128 reg) => _asm.MovIfNeeded(leftXmm, reg));
+
+            OperatorFactory.Handle(
+                leftXmm, rmRight,
+                (Xmm128 reg,Mem mem) => _asm.Subss(reg, mem),
+                (dest, src) => _asm.Subss(dest, src));
+        }
+        else if (op == OperatorType.Addition)
+        {
+            rmReturn = OperatorFactory.HandleCommutative(
+                rmLeft, rmRight,
+                (mem) => { _asm.Movss(leftXmm, mem); return leftXmm; },
+
+                (Xmm128 reg, Mem mem) => _asm.Addss(reg, mem),
+                (dest, src) => _asm.Addss(dest, src));
+
+        }
+        else if (op == OperatorType.Multiplication)
+        {
+            rmReturn = OperatorFactory.HandleCommutative(
+                rmLeft, rmRight,
+                (mem) => { _asm.Movss(leftXmm, mem); return leftXmm; },
+
+                (Xmm128 reg, Mem mem) => _asm.Mulss(reg, mem),
+                (dest, src) => _asm.Mulss(dest, src));
+        }
+        else if (op == OperatorType.LessThan)
+            rmReturn = HandleConditionalFloat32(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.AE, "CL", "CL_END");
+        else if (op == OperatorType.LessThanOrEqual)
+            rmReturn = HandleConditionalFloat32(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.A, "CLE", "CLE_END");
+        else if (op == OperatorType.GreaterThan)
+            rmReturn = HandleConditionalFloat32(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.BE, "CG", "CG_END");
+        else if (op == OperatorType.GreaterThanOrEqual)
+            rmReturn = HandleConditionalFloat32(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.B, "CGE", "CGE_END");
+        else if (op == OperatorType.Equality)
+            rmReturn = HandleConditionalFloat32(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.E, "CE", "CE_END");
+        else if (op == OperatorType.NotEqual)
+            rmReturn = HandleConditionalFloat32(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.NE, "CNE", "CNE_END");
+        else throw new InvalidOperationException($"operator type '{op}' is not supported");
+
+        if (spillRightResult) FreeLastUsedStackSlot();
+        return rmReturn;
+    }
+
+    private void HandleOperatorFloat32(BinaryExpression binaryExpression, Reg64 leftReg, Reg64 rightReg, Xmm128 leftXmm, Xmm128 rightXmm, bool spillRightResult, Action ifBlock, Action elseBlock)
+    {
+        var op = binaryExpression.Operator;
+        RM? rmReturn = leftXmm;
+        var rmRight = CompileToRMOrImmediate(binaryExpression.Right, rightReg, rightXmm);
+
+        if (spillRightResult)
+        {
+            var interm = NextAvailableLocalStackSlot();
+            HandleRMOrImmediate(rmRight,
+                (mem) =>
+                {
+                    if (mem is MemRegDisp memDisp && memDisp.Register == Reg64.RBP)
+                    {
+                        return;
+                    }
+                    _asm.Mov(rightReg, mem);
+                    _asm.Mov(interm, rightReg);
+                    rmRight = new RMOrImmediate(interm);
+
+                },
+                (Xmm128 reg) =>
+                {
+                    _asm.Movss(interm, reg);
+                    rmRight = new RMOrImmediate(interm);
+                });
+        }
+
+        var rmLeft = CompileToRMOrImmediate(binaryExpression.Left, leftReg, leftXmm);
+
+        if (op == OperatorType.Division)
+        {
+            // Ensure lhs is in a xmm register
+            HandleRMOrImmediate(rmLeft,
+                (mem) => _asm.Movss(leftXmm, mem),
+                (Xmm128 reg) => _asm.MovIfNeeded(leftXmm, reg));
+
+            OperatorFactory.Handle(
+                leftXmm, rmRight,
+                (Xmm128 reg, Mem mem) => _asm.Divss(reg, mem),
+                (dest, src) => _asm.Divss(dest, src));
+        }
+        else if (op == OperatorType.Subtraction)
+        {
+            // Ensure lhs is in a xmm register
+            HandleRMOrImmediate(rmLeft,
+                (mem) => _asm.Movss(leftXmm, mem),
+                (Xmm128 reg) => _asm.MovIfNeeded(leftXmm, reg));
+
+            OperatorFactory.Handle(
+                leftXmm, rmRight,
+                (Xmm128 reg, Mem mem) => _asm.Subss(reg, mem),
+                (dest, src) => _asm.Subss(dest, src));
+        }
+        else if (op == OperatorType.Addition)
+        {
+            rmReturn = OperatorFactory.HandleCommutative(
+                rmLeft, rmRight,
+                (mem) => { _asm.Movss(leftXmm, mem); return leftXmm; },
+
+                (Xmm128 reg, Mem mem) => _asm.Addss(reg, mem),
+                (dest, src) => _asm.Addss(dest, src));
+
+        }
+        else if (op == OperatorType.Multiplication)
+        {
+            rmReturn = OperatorFactory.HandleCommutative(
+                rmLeft, rmRight,
+                (mem) => { _asm.Movss(leftXmm, mem); return leftXmm; },
+
+                (Xmm128 reg, Mem mem) => _asm.Mulss(reg, mem),
+                (dest, src) => _asm.Mulss(dest, src));
+        }
+        else if (op == OperatorType.LessThan)
+            rmReturn = HandleConditionalBranchFloat32(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.AE, "CL", "CL_END", ifBlock, elseBlock);
+        else if (op == OperatorType.LessThanOrEqual)
+            rmReturn = HandleConditionalBranchFloat32(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.A, "CLE", "CLE_END", ifBlock, elseBlock);
+        else if (op == OperatorType.GreaterThan)
+            rmReturn = HandleConditionalBranchFloat32(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.BE, "CG", "CG_END", ifBlock, elseBlock);
+        else if (op == OperatorType.GreaterThanOrEqual)
+            rmReturn = HandleConditionalBranchFloat32(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.B, "CGE", "CGE_END", ifBlock, elseBlock);
+        else if (op == OperatorType.Equality)
+            rmReturn = HandleConditionalBranchFloat32(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.E, "CE", "CE_END", ifBlock, elseBlock);
+        else if (op == OperatorType.NotEqual)
+            rmReturn = HandleConditionalBranchFloat32(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.NE, "CNE", "CNE_END", ifBlock, elseBlock);
+        else throw new InvalidOperationException($"operator type '{op}' is not supported");
+
+        if (spillRightResult) FreeLastUsedStackSlot();
+        if (rmReturn != null)
+        {
+            throw new InvalidOperationException("unable to generate code for floating point truthiness");
+        }
+    }
+
+    private Reg64 HandleConditionalFloat32(Reg64 leftReg, Xmm128 leftXmm, RMOrImmediate rmLeft, RMOrImmediate rmRight, byte conditionCode, string labelPrefix, string endLabelPrefix)
+    {
+        // Note: condition code must be inverted for this logic to work
+        // IE if test is less than, conditon code should be GE (greater equal)
+        OperatorFactory.Handle(rmLeft, rmRight,
+                    (Mem mem) =>
+                    {
+                        _asm.Movss(leftXmm, mem);
+                        return leftXmm;
+                    },
+                    (Xmm128 reg) =>
+                    {
+                        _asm.MovIfNeeded(leftXmm, reg);
+                        return leftXmm;
+                    },
+                    (Xmm128 reg, Mem mem) =>
+                    {
+
+                        var falsePath = _asm.CreateUniqueLabel(labelPrefix);
+                        var endLabel = _asm.CreateUniqueLabel(endLabelPrefix);
+                        _asm.Comiss(reg, mem);
+                        _asm.Jcc(Rel32.Create(falsePath), conditionCode);
+                        _asm.Mov(leftReg, Imm32.Create(1));
+                        _asm.Jmp(Rel32.Create(endLabel));
+                        _asm.Label(falsePath);
+                        _asm.Xor(leftReg, (RM64)leftReg);
+                        _asm.Label(endLabel);
+                    },
+                    (Xmm128 regDest, Xmm128 regSrc) =>
+                    {
+
+                        var falsePath = _asm.CreateUniqueLabel(labelPrefix);
+                        var endLabel = _asm.CreateUniqueLabel(endLabelPrefix);
+                        _asm.Comiss(regDest, regSrc);
+                        _asm.Jcc(Rel32.Create(falsePath), conditionCode);
+                        _asm.Mov(leftReg, Imm32.Create(1));
+                        _asm.Jmp(Rel32.Create(endLabel));
+                        _asm.Label(falsePath);
+                        _asm.Xor(leftReg, (RM64)leftReg);
+                        _asm.Label(endLabel);
+                    });
+        return leftReg;
+    }
+
+    private Reg64? HandleConditionalBranchFloat32(Reg64 leftReg, Xmm128 leftXmm, RMOrImmediate rmLeft, RMOrImmediate rmRight, byte conditionCode, string labelPrefix, string endLabelPrefix, Action ifBlock, Action elseBlock)
+    {
+        // Note: condition code must be inverted for this logic to work
+        // IE if test is less than, conditon code should be GE (greater equal)
+        OperatorFactory.Handle(rmLeft, rmRight,
+                    (Mem mem) =>
+                    {
+                        _asm.Movss(leftXmm, mem);
+                        return leftXmm;
+                    },
+                    (Xmm128 reg) =>
+                    {
+                        _asm.MovIfNeeded(leftXmm, reg);
+                        return leftXmm;
+                    },
+                    (Xmm128 reg, Mem mem) =>
+                    {
+
+                        var falsePath = _asm.CreateUniqueLabel(labelPrefix);
+                        var endLabel = _asm.CreateUniqueLabel(endLabelPrefix);
+                        _asm.Comiss(reg, mem);
+                        _asm.Jcc(Rel32.Create(falsePath), conditionCode);
+                        ifBlock();
+                        _asm.Jmp(Rel32.Create(endLabel));
+                        _asm.Label(falsePath);
+                        elseBlock();
+                            _asm.Label(endLabel);
+                    },
+                    (Xmm128 regDest, Xmm128 regSrc) =>
+                    {
+
+                        var falsePath = _asm.CreateUniqueLabel(labelPrefix);
+                        var endLabel = _asm.CreateUniqueLabel(endLabelPrefix);
+                        _asm.Comiss(regDest, regSrc);
+                        _asm.Jcc(Rel32.Create(falsePath), conditionCode);
+                        ifBlock();
+                        _asm.Jmp(Rel32.Create(endLabel));
+                        _asm.Label(falsePath);
+                        elseBlock();
+                        _asm.Label(endLabel);
+                    });
+        return null;
+    }
+
+    #endregion Float32
+
+    #region Float64
+
+    private RM CompileFloat64Result(BinaryExpression binaryExpression)
+    {
+        // Binary operations always compute RHS first to keep it simple and avoid too much register swapping
+        var op = binaryExpression.Operator;
+
+        // Case 1: Lhs = CALL, Rhs = NonCall
+        if (binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+            return HandleOperatorFloat64(binaryExpression, Reg64.RAX, Reg64.RCX, Xmm128.XMM0, Xmm128.XMM1, true);
+
+        // Case 2: Lhs = NonCall, Rhs = CALL
+        if (!binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+            return HandleOperatorFloat64(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false);
+
+        // Case 3: Lhs = CALL, Rhs = CALL
+        if (binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+            return HandleOperatorFloat64(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, true);
+
+        // Case 3: Lhs = NonCall, Rhs = NonCall
+        if (!binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+            return HandleOperatorFloat64(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false);
+
+        throw new InvalidOperationException("unexpected binary case");
+    }
+
+    private void CompileFloat64ResultAsConditionalBlock(BinaryExpression binaryExpression, Action thenBlock, Action elseBlock)
+    {
+        // Binary operations always compute RHS first to keep it simple and avoid too much register swapping
+        var op = binaryExpression.Operator;
+
+        // Case 1: Lhs = CALL, Rhs = NonCall
+        if (binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        {
+            HandleOperatorFloat64(binaryExpression, Reg64.RAX, Reg64.RCX, Xmm128.XMM0, Xmm128.XMM1, true, thenBlock, elseBlock);
+            return;
+        }
+
+        // Case 2: Lhs = NonCall, Rhs = CALL
+        if (!binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        {
+            HandleOperatorFloat64(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false, thenBlock, elseBlock);
+            return;
+        }
+
+        // Case 3: Lhs = CALL, Rhs = CALL
+        if (binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        {
+            HandleOperatorFloat64(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, true, thenBlock, elseBlock);
+            return;
+        }
+
+        // Case 3: Lhs = NonCall, Rhs = NonCall
+        if (!binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        {
+            HandleOperatorFloat64(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false, thenBlock, elseBlock);
+            return;
+
+        }
+        throw new InvalidOperationException("unexpected binary case");
+    }
+
+    private RM HandleOperatorFloat64(BinaryExpression binaryExpression, Reg64 leftReg, Reg64 rightReg, Xmm128 leftXmm, Xmm128 rightXmm, bool spillRightResult)
+    {
+        var op = binaryExpression.Operator;
+        RM rmReturn = leftXmm;
+        var rmRight = CompileToRMOrImmediate(binaryExpression.Right, rightReg, rightXmm);
+
+        if (spillRightResult)
+        {
+            var interm = NextAvailableLocalStackSlot();
+            HandleRMOrImmediate(rmRight,
+                (mem) =>
+                {
+                    if (mem is MemRegDisp memDisp && memDisp.Register == Reg64.RBP)
+                    {
+                        return;
+                    }
+                    _asm.Mov(rightReg, mem);
+                    _asm.Mov(interm, rightReg);
+                    rmRight = new RMOrImmediate(interm);
+
+                },
+                (Xmm128 reg) =>
+                {
+                    _asm.Movsd(interm, reg);
+                    rmRight = new RMOrImmediate(interm);
+                });
+        }
+
+        var rmLeft = CompileToRMOrImmediate(binaryExpression.Left, leftReg, leftXmm);
+
+        if (op == OperatorType.Division)
+        {
+            // Ensure lhs is in a xmm register
+            HandleRMOrImmediate(rmLeft,
+                (mem) => _asm.Movsd(leftXmm, mem),
+                (Xmm128 reg) => _asm.MovIfNeeded(leftXmm, reg));
+
+            OperatorFactory.Handle(
+                leftXmm, rmRight,
+                (Xmm128 reg, Mem mem) => _asm.Divsd(reg, mem),
+                (dest, src) => _asm.Divsd(dest, src));
+        }
+        else if (op == OperatorType.Subtraction)
+        {
+            // Ensure lhs is in a xmm register
+            HandleRMOrImmediate(rmLeft,
+                (mem) => _asm.Movsd(leftXmm, mem),
+                (Xmm128 reg) => _asm.MovIfNeeded(leftXmm, reg));
+
+            OperatorFactory.Handle(
+                leftXmm, rmRight,
+                (Xmm128 reg, Mem mem) => _asm.Subsd(reg, mem),
+                (dest, src) => _asm.Subsd(dest, src));
+        }
+        else if (op == OperatorType.Addition)
+        {
+            rmReturn = OperatorFactory.HandleCommutative(
+                rmLeft, rmRight,
+                (mem) => { _asm.Movsd(leftXmm, mem); return leftXmm; },
+
+                (Xmm128 reg, Mem mem) => _asm.Addsd(reg, mem),
+                (dest, src) => _asm.Addsd(dest, src));
+
+        }
+        else if (op == OperatorType.Multiplication)
+        {
+            rmReturn = OperatorFactory.HandleCommutative(
+                rmLeft, rmRight,
+                (mem) => { _asm.Movsd(leftXmm, mem); return leftXmm; },
+
+                (Xmm128 reg, Mem mem) => _asm.Mulsd(reg, mem),
+                (dest, src) => _asm.Mulsd(dest, src));
+        }
+        else if (op == OperatorType.LessThan)
+            rmReturn = HandleConditionalFloat64(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.AE, "CL", "CL_END");
+        else if (op == OperatorType.LessThanOrEqual)
+            rmReturn = HandleConditionalFloat64(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.A, "CLE", "CLE_END");
+        else if (op == OperatorType.GreaterThan)
+            rmReturn = HandleConditionalFloat64(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.BE, "CG", "CG_END");
+        else if (op == OperatorType.GreaterThanOrEqual)
+            rmReturn = HandleConditionalFloat64(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.B, "CGE", "CGE_END");
+        else if (op == OperatorType.Equality)
+            rmReturn = HandleConditionalFloat64(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.E, "CE", "CE_END");
+        else if (op == OperatorType.NotEqual)
+            rmReturn = HandleConditionalFloat64(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.NE, "CNE", "CNE_END");
+        else throw new InvalidOperationException($"operator type '{op}' is not supported");
+
+        if (spillRightResult) FreeLastUsedStackSlot();
+        return rmReturn;
+    }
+
+    private void HandleOperatorFloat64(BinaryExpression binaryExpression, Reg64 leftReg, Reg64 rightReg, Xmm128 leftXmm, Xmm128 rightXmm, bool spillRightResult, Action ifBlock, Action elseBlock)
+    {
+        var op = binaryExpression.Operator;
+        RM? rmReturn = leftXmm;
+        var rmRight = CompileToRMOrImmediate(binaryExpression.Right, rightReg, rightXmm);
+
+        if (spillRightResult)
+        {
+            var interm = NextAvailableLocalStackSlot();
+            HandleRMOrImmediate(rmRight,
+                (mem) =>
+                {
+                    if (mem is MemRegDisp memDisp && memDisp.Register == Reg64.RBP)
+                    {
+                        return;
+                    }
+                    _asm.Mov(rightReg, mem);
+                    _asm.Mov(interm, rightReg);
+                    rmRight = new RMOrImmediate(interm);
+
+                },
+                (Xmm128 reg) =>
+                {
+                    _asm.Movsd(interm, reg);
+                    rmRight = new RMOrImmediate(interm);
+                });
+        }
+
+        var rmLeft = CompileToRMOrImmediate(binaryExpression.Left, leftReg, leftXmm);
+
+        if (op == OperatorType.Division)
+        {
+            // Ensure lhs is in a xmm register
+            HandleRMOrImmediate(rmLeft,
+                (mem) => _asm.Movsd(leftXmm, mem),
+                (Xmm128 reg) => _asm.MovIfNeeded(leftXmm, reg));
+
+            OperatorFactory.Handle(
+                leftXmm, rmRight,
+                (Xmm128 reg, Mem mem) => _asm.Divsd(reg, mem),
+                (dest, src) => _asm.Divsd(dest, src));
+        }
+        else if (op == OperatorType.Subtraction)
+        {
+            // Ensure lhs is in a xmm register
+            HandleRMOrImmediate(rmLeft,
+                (mem) => _asm.Movsd(leftXmm, mem),
+                (Xmm128 reg) => _asm.MovIfNeeded(leftXmm, reg));
+
+            OperatorFactory.Handle(
+                leftXmm, rmRight,
+                (Xmm128 reg, Mem mem) => _asm.Subsd(reg, mem),
+                (dest, src) => _asm.Subsd(dest, src));
+        }
+        else if (op == OperatorType.Addition)
+        {
+            rmReturn = OperatorFactory.HandleCommutative(
+                rmLeft, rmRight,
+                (mem) => { _asm.Movsd(leftXmm, mem); return leftXmm; },
+
+                (Xmm128 reg, Mem mem) => _asm.Addsd(reg, mem),
+                (dest, src) => _asm.Addsd(dest, src));
+
+        }
+        else if (op == OperatorType.Multiplication)
+        {
+            rmReturn = OperatorFactory.HandleCommutative(
+                rmLeft, rmRight,
+                (mem) => { _asm.Movsd(leftXmm, mem); return leftXmm; },
+
+                (Xmm128 reg, Mem mem) => _asm.Mulsd(reg, mem),
+                (dest, src) => _asm.Mulsd(dest, src));
+        }
+        else if (op == OperatorType.LessThan)
+            rmReturn = HandleConditionalBranchFloat64(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.AE, "CL", "CL_END", ifBlock, elseBlock);
+        else if (op == OperatorType.LessThanOrEqual)
+            rmReturn = HandleConditionalBranchFloat64(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.A, "CLE", "CLE_END", ifBlock, elseBlock);
+        else if (op == OperatorType.GreaterThan)
+            rmReturn = HandleConditionalBranchFloat64(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.BE, "CG", "CG_END", ifBlock, elseBlock);
+        else if (op == OperatorType.GreaterThanOrEqual)
+            rmReturn = HandleConditionalBranchFloat64(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.B, "CGE", "CGE_END", ifBlock, elseBlock);
+        else if (op == OperatorType.Equality)
+            rmReturn = HandleConditionalBranchFloat64(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.E, "CE", "CE_END", ifBlock, elseBlock);
+        else if (op == OperatorType.NotEqual)
+            rmReturn = HandleConditionalBranchFloat64(leftReg, leftXmm, rmLeft, rmRight, ConditionCodes.NE, "CNE", "CNE_END", ifBlock, elseBlock);
+        else throw new InvalidOperationException($"operator type '{op}' is not supported");
+
+        if (spillRightResult) FreeLastUsedStackSlot();
+        if (rmReturn != null)
+        {
+            throw new InvalidOperationException("unable to generate code for floating point truthiness");
+        }
+    }
+
+    private Reg64 HandleConditionalFloat64(Reg64 leftReg, Xmm128 leftXmm, RMOrImmediate rmLeft, RMOrImmediate rmRight, byte conditionCode, string labelPrefix, string endLabelPrefix)
+    {
+        // Note: condition code must be inverted for this logic to work
+        // IE if test is less than, conditon code should be GE (greater equal)
+        OperatorFactory.Handle(rmLeft, rmRight,
+                    (Mem mem) =>
+                    {
+                        _asm.Movsd(leftXmm, mem);
+                        return leftXmm;
+                    },
+                    (Xmm128 reg) =>
+                    {
+                        _asm.MovIfNeeded(leftXmm, reg);
+                        return leftXmm;
+                    },
+                    (Xmm128 reg, Mem mem) =>
+                    {
+
+                        var falsePath = _asm.CreateUniqueLabel(labelPrefix);
+                        var endLabel = _asm.CreateUniqueLabel(endLabelPrefix);
+                        _asm.Comisd(reg, mem);
+                        _asm.Jcc(Rel32.Create(falsePath), conditionCode);
+                        _asm.Mov(leftReg, Imm32.Create(1));
+                        _asm.Jmp(Rel32.Create(endLabel));
+                        _asm.Label(falsePath);
+                        _asm.Xor(leftReg, (RM64)leftReg);
+                        _asm.Label(endLabel);
+                    },
+                    (Xmm128 regDest, Xmm128 regSrc) =>
+                    {
+
+                        var falsePath = _asm.CreateUniqueLabel(labelPrefix);
+                        var endLabel = _asm.CreateUniqueLabel(endLabelPrefix);
+                        _asm.Comisd(regDest, regSrc);
+                        _asm.Jcc(Rel32.Create(falsePath), conditionCode);
+                        _asm.Mov(leftReg, Imm32.Create(1));
+                        _asm.Jmp(Rel32.Create(endLabel));
+                        _asm.Label(falsePath);
+                        _asm.Xor(leftReg, (RM64)leftReg);
+                        _asm.Label(endLabel);
+                    });
+        return leftReg;
+    }
+
+    private Reg64? HandleConditionalBranchFloat64(Reg64 leftReg, Xmm128 leftXmm, RMOrImmediate rmLeft, RMOrImmediate rmRight, byte conditionCode, string labelPrefix, string endLabelPrefix, Action ifBlock, Action elseBlock)
+    {
+        // Note: condition code must be inverted for this logic to work
+        // IE if test is less than, conditon code should be GE (greater equal)
+        OperatorFactory.Handle(rmLeft, rmRight,
+                    (Mem mem) =>
+                    {
+                        _asm.Movss(leftXmm, mem);
+                        return leftXmm;
+                    },
+                    (Xmm128 reg) =>
+                    {
+                        _asm.MovIfNeeded(leftXmm, reg);
+                        return leftXmm;
+                    },
+                    (Xmm128 reg, Mem mem) =>
+                    {
+
+                        var falsePath = _asm.CreateUniqueLabel(labelPrefix);
+                        var endLabel = _asm.CreateUniqueLabel(endLabelPrefix);
+                        _asm.Comisd(reg, mem);
+                        _asm.Jcc(Rel32.Create(falsePath), conditionCode);
+                        ifBlock();
+                        _asm.Jmp(Rel32.Create(endLabel));
+                        _asm.Label(falsePath);
+                        elseBlock();
+                        _asm.Label(endLabel);
+                    },
+                    (Xmm128 regDest, Xmm128 regSrc) =>
+                    {
+
+                        var falsePath = _asm.CreateUniqueLabel(labelPrefix);
+                        var endLabel = _asm.CreateUniqueLabel(endLabelPrefix);
+                        _asm.Comisd(regDest, regSrc);
+                        _asm.Jcc(Rel32.Create(falsePath), conditionCode);
+                        ifBlock();
+                        _asm.Jmp(Rel32.Create(endLabel));
+                        _asm.Label(falsePath);
+                        elseBlock();
+                        _asm.Label(endLabel);
+                    });
+        return null;
+    }
+
+    #endregion Float64
 
     #endregion
 
@@ -971,15 +1649,10 @@ public class MineralCompiler
                 {
                     var argument = callExpression.Arguments[i];
                     var mem = Mem64.Create(Reg64.RSP, i * 8); // RSP points directly at last pushed value, so first arg should be at offset 0 from rsp
-                    if (argument.IsFloatingPointType())
-                    {
-                        _asm.Movss(SelectXmmRegister(i), mem);
-                    }
-                    // TODO add double precision support
-                    else
-                    {
-                        _asm.Mov(SelectGeneralRegister(i), mem);
-                    }
+
+                    if (argument.IsFloat32()) _asm.Movss(SelectXmmRegister(i), mem);
+                    else if (argument.IsFloat64()) _asm.Movsd(SelectXmmRegister(i), mem);
+                    else _asm.Mov(SelectGeneralRegister(i), mem);
                 }
                 _asm.Call((RM64)Mem64.Create(callExpression.FunctionContext.GetDecoratedFunctionLabel()));
             }
@@ -997,7 +1670,7 @@ public class MineralCompiler
             else throw new InvalidOperationException($"unexpected rm type in call. rm type was '{indirect.GetType()}'");
         }
         _asm.Add(Reg64.RSP, (callExpression.Arguments.Count * 8) + additionalStackToSubtract); // clear stack of arguments
-        if (callExpression.IsFloatingPointType())
+        if (callExpression.IsFloat32() || callExpression.IsFloat64())
         {
             _asm.MovIfNeeded(desiredXmm, Xmm128.XMM0);
             return desiredXmm;
@@ -1220,32 +1893,23 @@ public class MineralCompiler
 
     #region Helpers
 
-    private void HandleRMOrImmediateForPush(RMOrImmediate rmOrImm, Action<Mem64> handleMemory, Action<Reg64> handleRegister, Action<Xmm128> handleXmm, Action<Imm32> handleImm32, Action<Imm8> handleImm8)
+    private void HandleRMOrImmediateForPush(RMOrImmediate rmOrImm, Action<Mem> handleMemory, Action<Reg64> handleRegister, Action<Xmm128> handleXmm, Action<Imm32> handleImm32, Action<Imm8> handleImm8)
     {
-        if (rmOrImm.IsRM) HandleRMForPush(rmOrImm.RM, handleMemory, handleRegister, handleXmm);
+        if (rmOrImm.IsReg<Xmm128>(out var xmm)) handleXmm(xmm);
+        else if (rmOrImm.IsReg<Reg64>(out var reg)) handleRegister(reg);
+        else if (rmOrImm.IsMem) handleMemory(rmOrImm.Mem);
         else if (rmOrImm.IsImm32) handleImm32(rmOrImm.Imm32);
         else if (rmOrImm.IsImm8) handleImm8(rmOrImm.Imm8);
         else
             throw new InvalidOperationException($"unexpected RM or Immeidate type '{rmOrImm.GetType()}'");
     }
-    private void HandleRMForPush(RM rm, Action<Mem64> handleMemory, Action<Reg64> handleRegister, Action<Xmm128> handleXmm)
+
+    private void HandleRM(RM rm, Action<Mem> handleMemory, Action<Reg64> handleReg)
     {
         if (rm is Reg64 reg)
-            handleRegister(reg);
-        else if (rm is Mem64 mem)
+            handleReg(reg);
+        else if (rm is Mem mem)
             handleMemory(mem);
-        else if (rm is Xmm128 xmm)
-            handleXmm(xmm);
-        else
-            throw new InvalidOperationException($"unexpected RM type '{rm.GetType()}'");
-    }
-
-    private void HandleRM(RM rm, Action<Mem64> handleMemory, Action<Xmm128> handleXmm)
-    {
-        if (rm is Mem64 mem)
-            handleMemory(mem);
-        else if (rm is Xmm128 xmm)
-            handleXmm(xmm);
         else
             throw new InvalidOperationException($"unexpected RM type '{rm.GetType()}'");
     }
@@ -1271,26 +1935,24 @@ public class MineralCompiler
     }
 
 
-    private void HandleRMOrImmediate(RMOrImmediate rmOrImm, Action<Mem64> handleMemory, Action<Reg64> handleRegister, Action<Imm32> handleImm32, Action<Imm8> handleImm8)
+    private void HandleRMOrImmediate(RMOrImmediate rmOrImm, Action<Mem> handleMemory, Action<Reg64> handleRegister, Action<Imm32> handleImm32)
     {
-        if (rmOrImm.IsRM) HandleRM(rmOrImm.RM, handleMemory, handleRegister);
+        if (rmOrImm.IsReg<Reg64>(out var reg)) handleRegister(reg);
+        else if (rmOrImm.IsMem) handleMemory(rmOrImm.Mem);
         else if (rmOrImm.IsImm32) handleImm32(rmOrImm.Imm32);
-        else if (rmOrImm.IsImm8) handleImm8(rmOrImm.Imm8);
         else
             throw new InvalidOperationException($"unexpected RM or immediate type '{rmOrImm.GetType()}'");
     }
 
-    private void HandleRM(RM rm, Action<Mem64> handleMemory, Action<Reg64> handleRegister)
+
+    private void HandleRMOrImmediate(RMOrImmediate rmOrImm, Action<Mem> handleMemory, Action<Xmm128> handleRegister)
     {
-        if (rm is Reg64 reg)
-            handleRegister(reg);
-        else if (rm is Mem64 mem)
-            handleMemory(mem);
+        // Floating points will not have immediates
+        if (rmOrImm.IsReg<Xmm128>(out var reg)) handleRegister(reg);
+        else if (rmOrImm.IsMem) handleMemory(rmOrImm.Mem);
         else
-            throw new InvalidOperationException($"unexpected RM type '{rm.GetType()}'");
+            throw new InvalidOperationException($"unexpected RM or immediate type '{rmOrImm.GetType()}'");
     }
-
-
 
 
     private int GetAdditonalStackSlotsNeeded(FunctionContext functionContext)
@@ -1322,7 +1984,8 @@ internal static class OperatorFactory
         else throw new InvalidOperationException($"unexpected right RM type '{right.GetType()}'");
     }
 
-    public static void Handle(RMOrImmediate rmLeft, RMOrImmediate right, Func<RM64, Reg64> moveLeftToReg, Func<Reg64, Reg64> moveRegLeftToReg, Func<Imm32, Reg64> moveImm32LeftToReg,  
+    public static void Handle(RMOrImmediate rmLeft, RMOrImmediate right, 
+        Func<RM64, Reg64> moveLeftToReg, Func<Reg64, Reg64> moveRegLeftToReg, Func<Imm32, Reg64> moveImm32LeftToReg,  
         Action<Reg64, RM64> memToReg, Action<Reg64, Reg64> regToReg, Action<Reg64, Imm32> imm32ToReg)
     {
         Reg64 left;
@@ -1440,6 +2103,64 @@ internal static class OperatorFactory
 
     #endregion
 
+    #region Float32 ops
+
+    internal static void Handle(Xmm128 left, RMOrImmediate right, Action<Xmm128, Mem> memToReg, Action<Xmm128, Xmm128> regToReg)
+    {
+        if (right.IsReg<Xmm128>(out var rightAsReg)) regToReg(left, rightAsReg);
+        else if (right.IsMem) memToReg(left, right.Mem);
+        else throw new InvalidOperationException($"unexpected right RM type '{right.GetType()}'");
+    }
+
+    public static void Handle(RMOrImmediate rmLeft, RMOrImmediate right, 
+        Func<Mem, Xmm128> moveMemLeftToReg, 
+        Func<Xmm128, Xmm128> moveRegLeftToReg,
+        Action<Xmm128, Mem> memToReg, 
+        Action<Xmm128, Xmm128> regToReg)
+    {
+        Xmm128 left;
+        if (rmLeft.IsReg<Xmm128>(out var leftAsReg)) left = moveRegLeftToReg(leftAsReg);
+        else if (rmLeft.IsMem) left = moveMemLeftToReg(rmLeft.Mem);
+        else throw new InvalidOperationException($"unexpected RM or immediate type '{rmLeft.GetType()}'");
+
+        if (right.IsReg<Xmm128>(out var rightAsReg)) regToReg(left, rightAsReg);
+        else if (right.IsMem) memToReg(left, right.Mem);
+        else throw new InvalidOperationException($"unexpected RM or immediate type '{right.GetType()}'");
+    }
+
+
+    public static Xmm128 HandleCommutative(RMOrImmediate left, RMOrImmediate right,
+        Func<Mem, Xmm128> dumpMemLeftToReg,    // These are used in the case of incompatible operands
+                                               // Mem to Mem, Imm to Imm, 
+                                               // Imm to Mem is also disallowed since destination should be a register
+
+        Action<Xmm128, Mem> memToReg,
+        Action<Xmm128, Xmm128> regToReg)
+    {
+        Xmm128 leftAsReg;
+        if (!left.IsReg(out leftAsReg))
+        {
+            if (right.IsReg<Xmm128>(out var rightAsReg))
+            {
+                if (left.IsMem) memToReg(rightAsReg, left.Mem);
+                else throw new InvalidOperationException($"unexpected left RM or immediate type");
+                return rightAsReg;
+            }
+
+            if (left.IsMem) leftAsReg = dumpMemLeftToReg(left.Mem);
+            else throw new InvalidOperationException($"unexpected left RM or immediate type");
+
+        }
+
+        if (right.IsReg<Xmm128>(out var rightReg)) regToReg(leftAsReg, rightReg);
+        else if (right.IsMem) memToReg(leftAsReg, right.Mem);
+        else throw new InvalidOperationException($"unexpected RM or immediate type '{right.GetType()}'");
+
+        return leftAsReg;
+    }
+
+    #endregion
+
 }
 
 internal class RMOrImmediate
@@ -1449,7 +2170,10 @@ internal class RMOrImmediate
     public bool IsImm32 => _imm is Imm32;
     public bool IsRM => _rm != null;
     public bool IsRM8 => _rm is RM8;
+    public bool IsRM32 => _rm is RM32;
+    public bool IsMem => _rm is Mem;
     public bool IsRM64 => _rm is RM64;
+    public bool IsRM128 => _rm is RM128;
     public bool IsReg<TReg>(out TReg reg) where TReg : Register
     {
         reg = default!;
@@ -1464,8 +2188,10 @@ internal class RMOrImmediate
     public Imm32 Imm32 => _imm as Imm32 ?? throw new ArgumentNullException(nameof(Imm32));
     public RM RM => _rm ?? throw new ArgumentNullException(nameof(RM));
     public RM8 RM8 => _rm as RM8 ?? throw new ArgumentNullException(nameof(RM8));
+    public RM32 RM32 => _rm as RM32 ?? throw new ArgumentNullException(nameof(RM32));
     public RM64 RM64 => _rm as RM64 ?? throw new ArgumentNullException(nameof(RM64));
-
+    public RM128 RM128 => _rm as RM128 ?? throw new ArgumentNullException(nameof(RM128));
+    public Mem Mem => _rm as Mem ?? throw new ArgumentNullException(nameof(Mem));
     public RMOrImmediate(Immediate imm)
     {
         _imm = imm;

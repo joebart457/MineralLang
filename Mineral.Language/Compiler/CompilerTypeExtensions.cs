@@ -88,9 +88,14 @@ public static class CompilerTypeExtensions
         return expression.ConcreteType.IsEqualTo(NativeTypes.Int);
     }
 
-    public static bool IsFloatingPointType(this ExpressionBase expression)
+    public static bool IsFloat32(this ExpressionBase expression)
     {
-        return expression.ConcreteType.IsEqualTo(NativeTypes.Float);
+        return expression.ConcreteType.IsEqualTo(NativeTypes.Float32);
+    }
+
+    public static bool IsFloat64(this ExpressionBase expression)
+    {
+        return expression.ConcreteType.IsEqualTo(NativeTypes.Float64);
     }
 
 }
