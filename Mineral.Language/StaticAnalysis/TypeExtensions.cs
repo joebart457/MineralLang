@@ -185,7 +185,7 @@ internal static class TypeExtensions
             case OperatorType.NotEqual:
             {
                 resultType = NativeTypes.Int;
-                return left.IsAssignableFrom(right) && (left.IsConditionalTestable() || (left.GetType() == typeof(ConcreteType) && left.BuiltinType == BuiltinType.Float));
+                return left.IsAssignableFrom(right) && (left.IsConditionalTestable() || left.IsEqualTo(NativeTypes.Float32) || left.IsEqualTo(NativeTypes.Float64));
             }
             case OperatorType.GreaterThan:
             case OperatorType.LessThan:
@@ -203,6 +203,6 @@ internal static class TypeExtensions
 
     public static bool IsNumericType(this ConcreteType type)
     {
-        return type.GetType() == typeof(ConcreteType) && (type.BuiltinType == BuiltinType.Int || type.BuiltinType == BuiltinType.Float);
+        return type.IsEqualTo(NativeTypes.Int) || type.IsEqualTo(NativeTypes.Float32) || type.IsEqualTo(NativeTypes.Float64);
     }
 }

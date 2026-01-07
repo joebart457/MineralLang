@@ -25,7 +25,8 @@ public static class FunctionContextExtensions
     public static string GetDecoratedFunctionLabel(this FunctionContext functionContext)
     {
         // Assume StdCall calling convention
-        return $"_{functionContext.GetFunctionSignature()}@{functionContext.Parameters.Count * 8}"; // assume 8 byte stack size for all parameters
+        return GetFunctionSignature(functionContext);
+        //return $"_{functionContext.GetFunctionSignature()}@{functionContext.Parameters.Count * 8}"; // assume 8 byte stack size for all parameters
     }
 
 }

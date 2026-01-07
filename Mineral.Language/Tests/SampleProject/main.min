@@ -16,16 +16,6 @@ pub func main() int {
 	x.message = "Hello There!";
 	_ = io.log(x.message, 12);
 
-	x.message.length < 4? {
-	
-	} else {
-	
-	
-	}
-
-	while x < 9 {
-		
-	}
 	return 0; 
 }
 

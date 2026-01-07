@@ -219,21 +219,26 @@ public class MineralParser: TokenParser
 
     private StatementBase ParseAssignmentOrConditional()
     {
-        var potentialLValue = ParseConditionalExpression();
-        if (AdvanceIfMatch(TokenTypes.QuestionMark))
+        LValue assignmentTarget;
+        if (AdvanceIfMatch(TokenTypes.Discard)) assignmentTarget = new DiscardLValue(Previous());
+        else
         {
-
-            var thenBlock = ParseBlock();
-            var elseBlock = new List<StatementBase>();
-            if (AdvanceIfMatch(TokenTypes.Else))
+            var potentialLValue = ParseConditionalExpression();
+            if (AdvanceIfMatch(TokenTypes.QuestionMark))
             {
-                elseBlock = ParseBlock();
-            }
-            return new ConditionalStatement(potentialLValue, thenBlock, elseBlock);  
-        }
 
-        if (!TryConvertToLValue(potentialLValue, out var assignmentTarget))
-            throw new ParsingException(Previous(), $"invalid lvalue (expression type {potentialLValue.GetType()})");
+                var thenBlock = ParseBlock();
+                var elseBlock = new List<StatementBase>();
+                if (AdvanceIfMatch(TokenTypes.Else))
+                {
+                    elseBlock = ParseBlock();
+                }
+                return new ConditionalStatement(potentialLValue, thenBlock, elseBlock);
+            }
+
+            if (!TryConvertToLValue(potentialLValue, out assignmentTarget))
+                throw new ParsingException(Previous(), $"invalid lvalue (expression type {potentialLValue.GetType()})");
+        }
 
         LValue? errorTarget = null;
         if (AdvanceIfMatch(TokenTypes.Comma))
@@ -395,15 +400,21 @@ public class MineralParser: TokenParser
 
     private OperableExpresson ParseLiteralExpression()
     {
+        var isNegative = AdvanceIfMatch(TokenTypes.Subtraction)? -1: 1;
         if (AdvanceIfMatch(TokenTypes.Integer))
         {
-            if (int.TryParse(Previous().Lexeme, out var i)) return new LiteralExpression(i);
+            if (int.TryParse(Previous().Lexeme, out var i)) return new LiteralExpression(i * isNegative);
             throw new ParsingException(Previous(), $"unable to parse value '{Previous().Lexeme}' to integer");
         }
         if (AdvanceIfMatch(TokenTypes.Float))
         {
-            if (float.TryParse(Previous().Lexeme, out var flt)) return new LiteralExpression(flt);
-            throw new ParsingException(Previous(), $"unable to parse value '{Previous().Lexeme}' to integer");
+            if (float.TryParse(Previous().Lexeme, out var flt)) return new LiteralExpression(flt * isNegative);
+            throw new ParsingException(Previous(), $"unable to parse value '{Previous().Lexeme}' to float32");
+        }
+        if (AdvanceIfMatch(TokenTypes.Double))
+        {
+            if (double.TryParse(Previous().Lexeme, out var dbl)) return new LiteralExpression(dbl * isNegative);
+            throw new ParsingException(Previous(), $"unable to parse value '{Previous().Lexeme}' to float64");
         }
         if (AdvanceIfMatch(TokenTypes.String))
         {

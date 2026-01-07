@@ -14,8 +14,9 @@ public class TypeResolver
 {
     private static readonly Dictionary<Token, ConcreteType> BuiltinTypes = new Dictionary<Token, ConcreteType>(new TokenEqualityComparer())
     {
-        { new(TokenTypes.Word, "int", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.Int) },
-        { new(TokenTypes.Word, "float", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.Float) },
+        { new(TokenTypes.Word, "int", Location.Zero, Location.Zero ), NativeTypes.Int },
+        { new(TokenTypes.Word, "float32", Location.Zero, Location.Zero ), NativeTypes.Float32 },
+        { new(TokenTypes.Word, "float64", Location.Zero, Location.Zero ), NativeTypes.Float64 },
         { new(TokenTypes.Word, "string", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.String) },
         { new(TokenTypes.Word, "void", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.Void) },
 
@@ -457,33 +458,23 @@ public class TypeResolver
         Resolve(errors, module, context, assignmentStatement.Value);
         var valueType = assignmentStatement.Value.ConcreteType;
 
-        var errorTarget = assignmentStatement.ErrorTarget;
-        if (errorTarget == null && assignmentStatement.Value is CallExpression callExpression && callExpression.Callee.ConcreteType is CallableType callableType && callableType.IsErrorable && callableType.ReturnType.IsVoidType())
+        
+        if (assignmentStatement.AssignmentTarget is IdentifierLValue identifierExpression)
         {
-            // If value is an errorable void type, treat single assignment as error assignments
-            errorTarget = assignmentStatement.AssignmentTarget;
-        } 
-        else
+            assignmentStatement.AssignmentTarget.TagAsType(ResolveOrCreateVariable(errors, context, identifierExpression.VariableName, valueType));
+        }
+        else if (assignmentStatement.AssignmentTarget is DiscardLValue)
         {
-            
-            if (assignmentStatement.AssignmentTarget is IdentifierLValue identifierExpression)
-            {
-                assignmentStatement.AssignmentTarget.TagAsType(ResolveOrCreateVariable(errors, context, identifierExpression.VariableName, valueType));
-            }
-            else if (assignmentStatement.AssignmentTarget is DiscardLValue)
-            {
-                // Pass
-            }
-            else ResolveLValue(errors, module, context, assignmentStatement.AssignmentTarget);
+            // Pass
+        }
+        else ResolveLValue(errors, module, context, assignmentStatement.AssignmentTarget);
 
-            if (!assignmentStatement.AssignmentTarget.ConcreteType.IsAssignableFrom(valueType))
-            {
-                errors.Add(assignmentStatement.AssignmentTarget, $"Cannot assign value of type '{valueType}' to lvalue of type '{assignmentStatement.AssignmentTarget.ConcreteType}");
-            }
+        if (!assignmentStatement.AssignmentTarget.ConcreteType.IsAssignableFrom(valueType))
+        {
+            errors.Add(assignmentStatement.AssignmentTarget, $"Cannot assign value of type '{valueType}' to lvalue of type '{assignmentStatement.AssignmentTarget.ConcreteType}");
         }
 
-        
-
+        var errorTarget = assignmentStatement.ErrorTarget;
         if (errorTarget != null)
         {
             if (!(valueType is CallableType callableType1 && callableType1.IsErrorable))
@@ -711,7 +702,9 @@ public class TypeResolver
         if (literalExpression.Value is int)
             literalExpression.TagAsType(new ConcreteType(BuiltinType.Int));
         else if (literalExpression.Value is float)
-            literalExpression.TagAsType(new ConcreteType(BuiltinType.Float));
+            literalExpression.TagAsType(new ConcreteType(BuiltinType.Float32));
+        else if (literalExpression.Value is double)
+            literalExpression.TagAsType(new ConcreteType(BuiltinType.Float64));
         else if (literalExpression.Value is string)
             literalExpression.TagAsType(new ConcreteType(BuiltinType.String));
         else if (literalExpression.Value is null)

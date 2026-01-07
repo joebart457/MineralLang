@@ -37,7 +37,7 @@ public static class CompilerService
                 return -2;
             }
 
-            var (success, compilationError) = compiler.CompileProgram("out.asm", programContext);
+            var (success, compilationError) = compiler.CompileProgram("testOutput.exe", programContext);
             if (!success)
             {
                 Console.WriteLine(compilationError);

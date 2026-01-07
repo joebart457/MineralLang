@@ -31,8 +31,8 @@ public class MineralCompiler
             var error = _asm.OutputX86Assembly64Bit(outputTarget, entryPoint, Path.GetFileName(outputPath), out var peFile);
             var bytes = peFile.AssembleProgram(entryPoint);
             File.WriteAllBytes(outputPath, bytes);
-            var text = peFile.EmitDecodedAssembly(entryPoint);
-            File.WriteAllText(outputPath, text);
+            //var text = peFile.EmitDecodedAssembly(entryPoint);
+            //File.WriteAllText(outputPath, text);
         } catch(Exception ex)
         {
             return (false, ex.Message);
@@ -47,6 +47,7 @@ public class MineralCompiler
             foreach (var function in kv.Value.Overloads.Values)
                 RegisterFunction(function);
         }
+
         foreach (var kv in module.Methods)
         {
             foreach(var function in kv.Value.Overloads.Values)
@@ -64,6 +65,7 @@ public class MineralCompiler
             _asm.AddImport(libraryPath, CallingConvention.Cdecl, functionContext.GetDecoratedFunctionLabel(), functionContext.FunctionName.Lexeme, parameters);
         }
     }
+
 
     private int _stackSlotIndex = 0;
     private Mem64 NextAvailableLocalStackSlot()
@@ -94,12 +96,13 @@ public class MineralCompiler
             localVariables.Add(new X86FunctionLocalData($"%__iterm{i}", 8));
         }
 
-        var function = new X86Function(CallingConvention.StdCall, functionContext.GetFunctionSignature(), parameters, localVariables, false, ""); // TODO: Exports
-        _asm.EnterFunction(function);
+        _asm.EnterFunction(CallingConvention.StdCall, functionContext.GetDecoratedFunctionLabel(), parameters, localVariables, false, ""); // TODO: Exports
 
         foreach(var statement in functionContext.BodyStatements)
         {
-            // Compile each statement
+            // Compile each statement except for stack allocate statments
+            if (statement is AssignmentStatement assignmentStatement && assignmentStatement.Value is StackAllocateExpression stackAllocateExpression) // TODO move this check to sanitizer
+                continue;
             Compile(statement);
         }
         if (functionContext.BodyStatements.LastOrDefault() is not ReturnStatement && functionContext.BodyStatements.LastOrDefault() is not ErrorStatement)
@@ -149,7 +152,7 @@ public class MineralCompiler
                 (mem) => _asm.Movsd(Xmm128.XMM0, mem),
                 (xmm) => _asm.MovIfNeeded(Xmm128.XMM0, xmm));
         }
-        else if (returnStatement.ValueToReturn.IsIntegerType())
+        else if (returnStatement.ValueToReturn.IsIntegerType() || returnStatement.ValueToReturn.IsReferenceType() || returnStatement.ValueToReturn.IsStringType())
         {
             HandleRMOrImmediate(rm,
                 (mem) => _asm.Mov(Reg64.RAX, mem),
@@ -240,7 +243,7 @@ public class MineralCompiler
                 },
                 (reg) => _asm.Movsd(assignmentTarget, reg));
         }
-        else if (assignmentStatement.AssignmentTarget.IsIntegerType())
+        else if (assignmentStatement.AssignmentTarget.IsIntegerType() || assignmentStatement.AssignmentTarget.IsReferenceType() || assignmentStatement.AssignmentTarget.IsStringType())
         {
             HandleRMOrImmediate(rmValue,
                 (mem) =>
@@ -288,8 +291,9 @@ public class MineralCompiler
                     return Mem64.Create(desiredReg, offset);
                 }
 
-                // If it is a struct type is it guaranteed to be on the stack
-                if (instanceMemoryLocation.Register != Reg64.RBP || instanceMemoryLocation.Displacement is not Disp32 disp32) throw new InvalidOperationException("structs should only be stack allocated");
+                // If it is a struct type it is guaranteed to be on the stack
+                if (instanceMemoryLocation.Register != Reg64.RBP || instanceMemoryLocation.Displacement is not Disp32 disp32) 
+                    throw new InvalidOperationException("structs should only be stack allocated");
                 return Mem64.Create(Reg64.RBP, disp32.Offset - offset);
             }
             else throw new InvalidOperationException($"unable to find member '{instanceMemberLValue.Member.Lexeme}' in type '{instanceMemberLValue.Instance.ConcreteType}' or '{instanceMemberLValue.Instance.ConcreteType}' is not a struct type");
@@ -351,7 +355,7 @@ public class MineralCompiler
                 throw new InvalidOperationException($"Unknown expression type '{expression.GetType()}'");
         }
     }
-    private RM64 Compile(IdentifierExpression identifierExpression)
+    private Mem Compile(IdentifierExpression identifierExpression)
     {
         if (identifierExpression.FunctionContext != null)
             return Mem64.Create(identifierExpression.FunctionContext.GetDecoratedFunctionLabel());
@@ -359,7 +363,7 @@ public class MineralCompiler
     }
 
 
-    private RM64 Compile(MemberAccessExpression memberAccessExpression, Reg64 desiredReg, Xmm128 desiredXmm)
+    private Mem Compile(MemberAccessExpression memberAccessExpression, Reg64 desiredReg, Xmm128 desiredXmm)
     {
         if (memberAccessExpression.FunctionContext != null) 
             return Mem64.Create(memberAccessExpression.FunctionContext.GetDecoratedFunctionLabel());
@@ -437,7 +441,7 @@ public class MineralCompiler
         // Here it is assumed binary expressions can only have operands with equal types
         if (!binaryExpression.Left.ConcreteType.IsEqualTo(binaryExpression.Right.ConcreteType))
             throw new InvalidOperationException($"binary {binaryExpression.Operator} is not supported between types '{binaryExpression.Left.ConcreteType}' and '{binaryExpression.Right.ConcreteType}'");
-        if (binaryExpression.Left.IsIntegerType()) return CompileIntegerResult(binaryExpression);
+        if (binaryExpression.Left.IsIntegerType() || binaryExpression.Left.IsReferenceType() || binaryExpression.Left.IsStringType()) return CompileIntegerResult(binaryExpression);
         else if (binaryExpression.Left.IsFloat32()) return CompileFloat32Result(binaryExpression);
         else if (binaryExpression.Left.IsFloat64()) return CompileFloat64Result(binaryExpression);
         else throw new InvalidOperationException($"unexpected lhs type '{binaryExpression.Left.ConcreteType}'");
@@ -448,7 +452,7 @@ public class MineralCompiler
         // Here it is assumed binary expressions can only have operands with equal types
         if (!binaryExpression.Left.ConcreteType.IsEqualTo(binaryExpression.Right.ConcreteType))
             throw new InvalidOperationException($"binary {binaryExpression.Operator} is not supported between types '{binaryExpression.Left.ConcreteType}' and '{binaryExpression.Right.ConcreteType}'");
-        if (binaryExpression.Left.IsIntegerType()) CompileIntegerResultAsConditionalBlock(binaryExpression, ifBlock, elseBlock);
+        if (binaryExpression.Left.IsIntegerType() || binaryExpression.Left.IsReferenceType() || binaryExpression.Left.IsStringType()) CompileIntegerResultAsConditionalBlock(binaryExpression, ifBlock, elseBlock);
         else if (binaryExpression.Left.IsFloat32()) CompileFloat32ResultAsConditionalBlock(binaryExpression, ifBlock, elseBlock);
         else if (binaryExpression.Left.IsFloat64()) CompileFloat64ResultAsConditionalBlock(binaryExpression, ifBlock, elseBlock);
         else throw new InvalidOperationException($"unexpected lhs type '{binaryExpression.Left.ConcreteType}'");
@@ -1645,7 +1649,8 @@ public class MineralCompiler
             if (callExpression.FunctionContext.IsImported)
             {
                 // imported function call
-                for (int i = 0; i < callExpression.Arguments.Count; i++)
+                var registerPassedArgumentCount = Math.Min(callExpression.Arguments.Count, 4);
+                for (int i = 0; i < registerPassedArgumentCount; i++)
                 {
                     var argument = callExpression.Arguments[i];
                     var mem = Mem64.Create(Reg64.RSP, i * 8); // RSP points directly at last pushed value, so first arg should be at offset 0 from rsp
@@ -1702,7 +1707,7 @@ public class MineralCompiler
                 return Reg64.RCX;
             case 1: return Reg64.RDX;
             case 2: return Reg64.R8;
-            case 4: return Reg64.R9;
+            case 3: return Reg64.R9;
             default:
                 throw new NotSupportedException("general register arguments not supported past parameter 4");
         }
@@ -1840,7 +1845,7 @@ public class MineralCompiler
         }
         callExpression.Metadata.SU = 4;
         callExpression.Metadata.ContainsCall = true;
-        callExpression.Metadata.StackSlotsNeeded = callExpression.Arguments.Max(a => a.Metadata.StackSlotsNeeded);
+        callExpression.Metadata.StackSlotsNeeded = callExpression.Arguments.Count > 0? callExpression.Arguments.Max(a => a.Metadata.StackSlotsNeeded): 0;
     }
 
     private void GatherMetadata(IdentifierExpression identifierExpression)

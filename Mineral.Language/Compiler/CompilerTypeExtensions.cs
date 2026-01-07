@@ -29,7 +29,7 @@ public static class CompilerTypeExtensions
     {
         if (concreteType.IsBuiltin) return (concreteType.BuiltinType) switch
         {
-            BuiltinType.Float => 4,
+            BuiltinType.Float32 => 4,
             BuiltinType.Byte => 1,
             _ => 8,
         };
@@ -88,6 +88,15 @@ public static class CompilerTypeExtensions
         return expression.ConcreteType.IsEqualTo(NativeTypes.Int);
     }
 
+    public static bool IsReferenceType(this ExpressionBase expression)
+    {
+        return expression.ConcreteType is ReferenceType;
+    }
+
+    public static bool IsStringType(this ExpressionBase expression)
+    {
+        return expression.ConcreteType.IsEqualTo(NativeTypes.String);
+    }
     public static bool IsFloat32(this ExpressionBase expression)
     {
         return expression.ConcreteType.IsEqualTo(NativeTypes.Float32);

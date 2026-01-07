@@ -56,7 +56,7 @@ public static class TokenTypes
     public const string String = BuiltinTokenTypes.String;
     public const string Integer = BuiltinTokenTypes.Integer;
     public const string Float = BuiltinTokenTypes.Float;
-    
+    public const string Double = BuiltinTokenTypes.Double;
 
     // Enclosed
     public const string ImportPath = "ImportPath";
