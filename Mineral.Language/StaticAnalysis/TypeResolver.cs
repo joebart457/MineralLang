@@ -685,6 +685,16 @@ public class TypeResolver
 
     public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, MemberAccessExpression memberAccessExpression)
     {
+        if( TryResolveToMethodGroup(errors, module, context, memberAccessExpression, out var methodGroup) && methodGroup != null)
+        {
+            if (methodGroup.TryGetSingularOverload(out var functionOverload))
+            {
+                // This is only possible when function reference is unambiguous (i.e., only one overload exists)
+                memberAccessExpression.TagAsType(functionOverload.AsConcreteType());
+                memberAccessExpression.FunctionContext = functionOverload;
+                return;
+            }
+        }
         Resolve(errors, module, context, memberAccessExpression.Instance);
         var instanceType = memberAccessExpression.Instance.ConcreteType;
         if (instanceType is not StructType structType)
@@ -902,12 +912,7 @@ public class ModuleContext
     {
         functionContext = new(this);
         if (!Methods.TryGetValue(methodName, out var methodGroup)) return false;
-        if (methodGroup.Overloads.Count == 1)
-        {
-            functionContext = methodGroup.Overloads.First().Value;
-            return true;
-        }
-        return false;
+        return methodGroup.TryGetSingularOverload(out functionContext);
     }
 
     public bool TryGetMethodOverload(FunctionKey functionKey, out FunctionContext functionContext)
@@ -952,7 +957,7 @@ public class MethodGroup
 
     public bool TryGetOverload(FunctionKey functionKey, out FunctionContext functionOverload)
     {
-        functionOverload = new(null!); // TODO: will never be null when returning true, trusting the programmer for now!
+        functionOverload = new(Module); // TODO: will never be null when returning true, trusting the programmer for now!
         if (Overloads.TryGetValue(functionKey, out var potentialOverload) && potentialOverload != null)
         {
             functionOverload = potentialOverload;
@@ -963,13 +968,24 @@ public class MethodGroup
 
     public bool TryGetPublicOverload(FunctionKey functionKey, out FunctionContext functionOverload)
     {
-        functionOverload = new(null!); // TODO: will never be null when returning true, trusting the programmer for now!
+        functionOverload = new(Module); // TODO: will never be null when returning true, trusting the programmer for now!
         if (Overloads.TryGetValue(functionKey, out var potentialOverload) && potentialOverload != null && potentialOverload.IsPublic)
         {
             functionOverload = potentialOverload;
             return true;
         }
         else return false;
+    }
+
+    public bool TryGetSingularOverload(out FunctionContext functionOverload)
+    {
+        functionOverload = new(Module);
+        if (Overloads.Count == 1)
+        {
+            functionOverload = Overloads.First().Value;
+            return true;
+        }
+        return false;
     }
 
 }

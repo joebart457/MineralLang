@@ -311,6 +311,32 @@ public class MineralCompiler
 
     #region Happy path expression compilation
 
+    private RMOrImmediate CompileToRMOrImmediate(ExpressionBase expression, Reg64 desiredReg, Xmm128 desiredXmm)
+    {
+        switch (expression)
+        {
+            case LiteralExpression literalExpression:
+                return Compile(literalExpression);
+            
+            default:
+                return new RMOrImmediate(Compile(expression, desiredReg, desiredXmm));
+        }
+    }
+
+    private RMOrImmediate Compile(LiteralExpression literalExpression)
+    {
+        if (literalExpression.Value is int i)
+            return new RMOrImmediate(Imm32.Create(i));
+        else if (literalExpression.Value is float flt)
+            return new RMOrImmediate(_asm.AddFloatingPoint(flt));
+        else if (literalExpression.Value is string str)
+            return new RMOrImmediate(_asm.AddString(str));
+        else if (literalExpression.Value is null)
+            return new RMOrImmediate(Imm32.Create(0));
+        else
+            throw new InvalidOperationException($"Unknown literal type for value '{literalExpression.Value}'");
+    }
+
     private RM Compile(ExpressionBase expression, Reg64 desiredReg, Xmm128 desiredXmm)
     {
         switch (expression)
@@ -323,35 +349,25 @@ public class MineralCompiler
                 return Compile(identifierExpression);
             case MemberAccessExpression memberAccessExpression:
                 return Compile(memberAccessExpression, desiredReg, desiredXmm);
-            case LiteralExpression literalExpression:
-                return Compile(literalExpression);
             case ReferenceExpression referenceExpression:
                 return Compile(referenceExpression, desiredReg, desiredXmm);
             default:
                 throw new InvalidOperationException($"Unknown expression type '{expression.GetType()}'");
         }
     }
-    private Mem64 Compile(IdentifierExpression identifierExpression)
+    private RM64 Compile(IdentifierExpression identifierExpression)
     {
+        if (identifierExpression.FunctionContext != null)
+            return Mem64.Create(identifierExpression.FunctionContext.GetDecoratedFunctionLabel());
         return _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _);
     }
 
-    private RM Compile(LiteralExpression literalExpression)
-    {
-        if (literalExpression.Value is int i)
-            return Imm32.Create(i);
-        else if (literalExpression.Value is float flt)
-            return _asm.AddFloatingPoint(flt);
-        else if (literalExpression.Value is string str)
-            return _asm.AddString(str);
-        else if (literalExpression.Value is null)
-            return Imm32.Create(0);
-        else
-            throw new InvalidOperationException($"Unknown literal type for value '{literalExpression.Value}'");
-    }
 
-    private Mem64 Compile(MemberAccessExpression memberAccessExpression, Reg64 desiredReg, Xmm128 desiredXmm)
+    private RM64 Compile(MemberAccessExpression memberAccessExpression, Reg64 desiredReg, Xmm128 desiredXmm)
     {
+        if (memberAccessExpression.FunctionContext != null) 
+            return Mem64.Create(memberAccessExpression.FunctionContext.GetDecoratedFunctionLabel());
+
         var instanceLocation = Compile(memberAccessExpression.Instance, desiredReg, desiredXmm);
         if (!memberAccessExpression.Instance.ConcreteType.TryGetMemberOffsetFromStructOrReference(memberAccessExpression.MemberToAccess, out var isReferenceType, out var offset))
             throw new InvalidOperationException($"expect left hand side of member access to be struct type but got '{memberAccessExpression.Instance.ConcreteType}' or type '{memberAccessExpression.Instance.ConcreteType}' does not contain member '{memberAccessExpression.MemberToAccess.Lexeme}'");
@@ -531,11 +547,11 @@ public class MineralCompiler
         var op = binaryExpression.Operator;
         var leftReg = Reg64.RAX;
         var rightReg = Reg64.RCX;
-        var rmRight = Compile(binaryExpression.Right, rightReg, Xmm128.XMM1);
+        var rmRight = CompileToRMOrImmediate(binaryExpression.Right, rightReg, Xmm128.XMM1);
         if (spillRightResult)
         {
             var interm = NextAvailableLocalStackSlot();
-            HandleRM(rmRight,
+            HandleRMOrImmediate(rmRight,
                 (mem) =>
                 {
                     if (mem.Register != Reg64.RBP)
@@ -543,24 +559,28 @@ public class MineralCompiler
                         // If register does not persist accross calls
                         _asm.Mov(rightReg, mem);
                         _asm.Mov(interm, rightReg);
-                        rmRight = interm;
+                        rmRight = new RMOrImmediate(interm);
                     }
 
                 },
-                (reg) => { _asm.Mov(interm, reg); rmRight = interm; },
+                (reg) => { _asm.Mov(interm, reg); rmRight = new RMOrImmediate(interm); },
                 (Imm32 imm) => {
+                    // Pass since immediates persist always
+                },
+                (Imm8 imm) => {
                     // Pass since immediates persist always
                 });
         }
-        var rmLeft = Compile(binaryExpression.Right, leftReg, Xmm128.XMM0);
+        var rmLeft = CompileToRMOrImmediate(binaryExpression.Right, leftReg, Xmm128.XMM0);
 
         // Ensure lhs is in RAX
-        HandleRM(rmLeft,
+        HandleRMOrImmediate(rmLeft,
             (mem) => _asm.Mov(leftReg, mem),
             (reg) => _asm.MovIfNeeded(leftReg, reg),
-            (Imm32 imm) => _asm.Mov(leftReg, imm));
+            (Imm32 imm) => _asm.Mov(leftReg, imm),
+            (Imm8 imm) => throw new InvalidOperationException("unsupported division by imm8"));
 
-        OperatorFactory.Handle<Reg64, Imm32>(
+        OperatorFactory.Handle<Reg64>(
             leftReg, rmRight,
             (reg, mem) =>
             {
@@ -572,10 +592,16 @@ public class MineralCompiler
                 _asm.Cqo();
                 _asm.Idiv(regSrc);
             },
-            (reg, imm) =>
+            (Reg64 reg, Imm32 imm) =>
             {
                 _asm.Cqo();
                 _asm.Mov(rightReg, imm);
+                _asm.Idiv(rightReg);
+            },
+            (Reg64 reg, Imm8 imm) => 
+            {
+                _asm.Cqo();
+                _asm.Mov(rightReg, Imm32.Create(imm.Value));
                 _asm.Idiv(rightReg);
             });
 
@@ -585,59 +611,7 @@ public class MineralCompiler
 
     private void HandleDivision(BinaryExpression binaryExpression, bool spillRightResult, Action thenBlock, Action elseBlock)
     {
-        var op = binaryExpression.Operator;
-        var leftReg = Reg64.RAX;
-        var rightReg = Reg64.RCX;
-        var rmRight = Compile(binaryExpression.Right, rightReg, Xmm128.XMM1);
-        if (spillRightResult)
-        {
-            var interm = NextAvailableLocalStackSlot();
-            HandleRM(rmRight,
-                (mem) =>
-                {
-                    if (mem.Register != Reg64.RBP)
-                    {
-                        // If register does not persist accross calls
-                        _asm.Mov(rightReg, mem);
-                        _asm.Mov(interm, rightReg);
-                        rmRight = interm;
-                    }
-
-                },
-                (reg) => { _asm.Mov(interm, reg); rmRight = interm; },
-                (Imm32 imm) => {
-                    // Pass since immediates persist always
-                });
-        }
-        var rmLeft = Compile(binaryExpression.Right, leftReg, Xmm128.XMM0);
-
-        // Ensure lhs is in RAX
-        HandleRM(rmLeft,
-            (mem) => _asm.Mov(leftReg, mem),
-            (reg) => _asm.MovIfNeeded(leftReg, reg),
-            (Imm32 imm) => _asm.Mov(leftReg, imm));
-
-        OperatorFactory.Handle<Reg64, Imm32>(
-            leftReg, rmRight,
-            (reg, mem) =>
-            {
-                _asm.Cqo();
-                _asm.Idiv((RM64)mem);
-            },
-            (regDest, regSrc) =>
-            {
-                _asm.Cqo();
-                _asm.Idiv(regSrc);
-            },
-            (reg, imm) =>
-            {
-                _asm.Cqo();
-                _asm.Mov(rightReg, imm);
-                _asm.Idiv(rightReg);
-            });
-
-        if (spillRightResult) FreeLastUsedStackSlot();
-        var regToTest = op == OperatorType.Division ? Reg64.RAX : Reg64.RDX;
+        var regToTest = HandleDivision(binaryExpression, spillRightResult);
         var falseLabel = _asm.CreateUniqueLabel("CTST_");
         var endLabel = _asm.CreateUniqueLabel("CTST_END_");
         _asm.Test(regToTest, regToTest);
@@ -654,12 +628,12 @@ public class MineralCompiler
     {
         var op = binaryExpression.Operator;
         Reg64 rmReturn = leftReg;
-        var rmRight = Compile(binaryExpression.Right, rightReg, rightXmm);
+        var rmRight = CompileToRMOrImmediate(binaryExpression.Right, rightReg, rightXmm);
 
         if (spillRightResult)
         {
             var interm = NextAvailableLocalStackSlot();
-            HandleRM(rmRight,
+            HandleRMOrImmediate(rmRight,
                 (mem) =>
                 {
                     if (mem.Register != Reg64.RBP)
@@ -667,38 +641,44 @@ public class MineralCompiler
                         // If register does not persist accross calls
                         _asm.Mov(rightReg, mem);
                         _asm.Mov(interm, rightReg);
-                        rmRight = interm;
+                        rmRight = new RMOrImmediate(interm);
                     }
 
                 },
-                (reg) => { _asm.Mov(interm, reg); rmRight = interm; },
+                (reg) => { _asm.Mov(interm, reg); rmRight = new RMOrImmediate(interm); },
                 (Imm32 imm) => {
+                    // Pass since immediates persist always
+                },
+                (Imm8 imm) => {
                     // Pass since immediates persist always
                 });
         }
 
-        var rmLeft = Compile(binaryExpression.Left, leftReg, leftXmm);
+        var rmLeft = CompileToRMOrImmediate(binaryExpression.Left, leftReg, leftXmm);
 
         if (op == OperatorType.Subtraction)
         {
             // Ensure lhs is in a register
-            HandleRM(rmLeft,
+            HandleRMOrImmediate(rmLeft,
                 (mem) => _asm.Mov(leftReg, mem),
                 (reg) => _asm.MovIfNeeded(leftReg, reg),
-                (Imm32 imm) => _asm.Mov(leftReg, imm));
+                (Imm32 imm) => _asm.Mov(leftReg, imm),
+                (Imm8 imm) => _asm.Mov(leftReg.ToReg8(), imm.Value)); 
 
-            OperatorFactory.Handle<Reg64, Imm32>(
+            OperatorFactory.Handle<Reg64>(
                 leftReg, rmRight,
                 (reg, mem) => _asm.Sub(reg, mem),
                 (dest, src) => _asm.Sub(dest, (RM64)src),
-                (reg, imm) => _asm.Sub(reg, imm.Value));
+                (reg, imm) => _asm.Sub(reg, imm.Value),
+                (reg, imm) => _asm.Sub(reg.ToReg8(), imm.Value));
 
 
         }
         else if (op == OperatorType.Addition)
         {
-            OperatorFactory.HandleCommutative<Reg64, Imm32>(rmLeft, rmRight,
+            OperatorFactory.HandleCommutative<Reg64>(rmLeft, rmRight,
                 (mem) => { _asm.Mov(leftReg, mem); return leftReg; },
+                (imm) => { _asm.Mov(leftReg, imm); return leftReg; },
                 (imm) => { _asm.Mov(leftReg, imm); return leftReg; },
                 (reg, mem) => _asm.Add(reg, mem),
                 (dest, src) => _asm.Add(dest, (RM64)src),
@@ -981,15 +961,16 @@ public class MineralCompiler
         for (int i = callExpression.Arguments.Count - 1; i >= 0; i--)
         {
             var argument = callExpression.Arguments[i];
-            var rmArg = Compile(argument, Reg64.RAX, Xmm128.XMM0);
-            HandleRMForPush(rmArg,
+            var rmArg = CompileToRMOrImmediate(argument, Reg64.RAX, Xmm128.XMM0);
+            HandleRMOrImmediateForPush(rmArg,
                 (mem) => _asm.Push((RM64)mem),
                 (reg) => _asm.Push(reg),
                 (xmm) => {
                     _asm.Sub(Reg64.RSP, 8);
                     _asm.Movq(Mem64.Create(Reg64.RSP), Xmm128.XMM0);
                 },
-                (imm) => _asm.Push(imm.Value));
+                (imm) => _asm.Push(imm.Value),
+                (imm) => _asm.Push((sbyte)imm.Value));
         }
         if (callExpression.FunctionContext != null)
         {
@@ -1249,7 +1230,15 @@ public class MineralCompiler
 
     #region Helpers
 
-    private void HandleRMForPush(RM rm, Action<Mem64> handleMemory, Action<Reg64> handleRegister, Action<Xmm128> handleXmm, Action<Imm32> handleImm32)
+    private void HandleRMOrImmediateForPush(RMOrImmediate rmOrImm, Action<Mem64> handleMemory, Action<Reg64> handleRegister, Action<Xmm128> handleXmm, Action<Imm32> handleImm32, Action<Imm8> handleImm8)
+    {
+        if (rmOrImm.IsRM) HandleRMForPush(rmOrImm.RM, handleMemory, handleRegister, handleXmm);
+        else if (rmOrImm.IsImm32) handleImm32(rmOrImm.Imm32);
+        else if (rmOrImm.IsImm8) handleImm8(rmOrImm.Imm8);
+        else
+            throw new InvalidOperationException($"unexpected RM or Immeidate type '{rmOrImm.GetType()}'");
+    }
+    private void HandleRMForPush(RM rm, Action<Mem64> handleMemory, Action<Reg64> handleRegister, Action<Xmm128> handleXmm)
     {
         if (rm is Reg64 reg)
             handleRegister(reg);
@@ -1257,8 +1246,6 @@ public class MineralCompiler
             handleMemory(mem);
         else if (rm is Xmm128 xmm)
             handleXmm(xmm);
-        else if (rm is Imm32 imm32)
-            handleImm32(imm32);
         else
             throw new InvalidOperationException($"unexpected RM type '{rm.GetType()}'");
     }
@@ -1294,14 +1281,21 @@ public class MineralCompiler
     }
 
 
-    private void HandleRM(RM rm, Action<Mem64> handleMemory, Action<Reg64> handleRegister, Action<Imm32> handleImm32)
+    private void HandleRMOrImmediate(RMOrImmediate rmOrImm, Action<Mem64> handleMemory, Action<Reg64> handleRegister, Action<Imm32> handleImm32, Action<Imm8> handleImm8)
+    {
+        if (rmOrImm.IsRM) HandleRM(rmOrImm.RM, handleMemory, handleRegister);
+        else if (rmOrImm.IsImm32) handleImm32(rmOrImm.Imm32);
+        else if (rmOrImm.IsImm8) handleImm8(rmOrImm.Imm8);
+        else
+            throw new InvalidOperationException($"unexpected RM or immediate type '{rmOrImm.GetType()}'");
+    }
+
+    private void HandleRM(RM rm, Action<Mem64> handleMemory, Action<Reg64> handleRegister)
     {
         if (rm is Reg64 reg)
             handleRegister(reg);
         else if (rm is Mem64 mem)
             handleMemory(mem);
-        else if (rm is Imm32 imm32)
-            handleImm32(imm32);
         else
             throw new InvalidOperationException($"unexpected RM type '{rm.GetType()}'");
     }
@@ -1325,15 +1319,35 @@ public class MineralCompiler
 
 
 
-public static class OperatorFactory
+internal static class OperatorFactory
 {
 
-    public static void Handle<TReg, TImm>(TReg left, RM right, Action<TReg, Mem64> memToReg, Action<TReg, TReg> regToReg, Action<TReg, TImm> immToReg) where TReg : Register where TImm : Immediate
+    // 64 bit operations
+
+    internal static void Handle<TReg>(TReg left, RMOrImmediate right, Action<TReg, RM64> memToReg, Action<TReg, TReg> regToReg, Action<TReg, Imm32> imm32ToReg, Action<TReg, Imm8> imm8ToReg) where TReg : Register 
     {
-        if (right is Mem64 mem) memToReg(left, mem);
-        else if (right is TReg reg) regToReg(left, reg);
-        else if (right is TImm immNN) immToReg(left, immNN);
+        if (right.IsReg<TReg>(out var rightAsReg)) regToReg(left, rightAsReg);
+        else if (right.IsRM64) memToReg(left, right.RM64);
+        else if (right.IsImm32) imm32ToReg(left, right.Imm32);
+        else if (right.IsImm8) imm8ToReg(left, right.Imm8);
         else throw new InvalidOperationException($"unexpected right RM type '{right.GetType()}'");
+    }
+
+    public static void Handle<TReg>(RMOrImmediate rmLeft, RMOrImmediate right, Func<RM64, TReg> moveLeftToReg, Func<TReg, TReg> moveRegLeftToReg, Func<Imm32, TReg> moveImm32LeftToReg, Func<Imm8, TReg> moveImm8LeftToReg, 
+        Action<TReg, RM64> memToReg, Action<TReg, TReg> regToReg, Action<TReg, Imm32> imm32ToReg, Action<TReg, Imm8> imm8ToReg) where TReg : Register
+    {
+        TReg left;
+        if (rmLeft.IsReg<TReg>(out var leftAsReg)) left = moveRegLeftToReg(leftAsReg);
+        else if (rmLeft.IsRM64) left = moveLeftToReg(rmLeft.RM64);
+        else if (rmLeft.IsImm32) left = moveImm32LeftToReg(rmLeft.Imm32);
+        else if (rmLeft.IsImm8) left = moveImm8LeftToReg(rmLeft.Imm8);
+        else throw new InvalidOperationException($"unexpected RM or immediate type '{rmLeft.GetType()}'");
+
+        if (right.IsReg<TReg>(out var rightAsReg)) regToReg(left, rightAsReg);
+        else if (right.IsRM64) memToReg(left, right.RM64);
+        else if (right.IsImm32) imm32ToReg(left, right.Imm32);
+        else if (right.IsImm8) imm8ToReg(left, right.Imm8);
+        else throw new InvalidOperationException($"unexpected RM or immediate type '{right.GetType()}'");
     }
 
     public static void Handle<TReg, TImm>(RM rmLeft, RM right, Func<Mem64, TReg> moveLeftToReg, Func<TReg, TReg> moveRegLeftToReg, Func<TImm, TReg> moveImmLeftToReg, Action<TReg, Mem64> memToReg, Action<TReg, TReg> regToReg, Action<TReg, TImm> immToReg) where TReg : Register where TImm : Immediate
@@ -1352,52 +1366,82 @@ public static class OperatorFactory
 
 
 
+    public static TReg HandleCommutative<TReg>(RMOrImmediate left, RMOrImmediate right, 
+        Func<RM64, TReg> dumpMemLeftToReg,       // These are used in the case of incompatible operands
+        Func<Imm32, TReg> dumpImm32LeftToReg, // Mem to Mem, Imm to Imm, 
+        Func<Imm8, TReg> dumpImm8LeftToReg,   // Imm to Mem is also disallowed since destination should be a register
 
-    public static void HandleCommutative<TReg, TImm>(RM rmLeft, RM right, 
-        Func<Mem64, TReg> moveLeftToReg,
-        Func<TImm, TReg> moveImmLeftToReg, 
-        Action<TReg, Mem64> memToReg, 
-        Action<TReg, TReg> regToReg, 
-        Action<TReg, TImm> immToReg,
-        Action<TImm, TReg> regToImm,
-        Action<Mem64, TReg> regToMem) where TReg : Register where TImm : Immediate
+        Action<TReg, RM64> memToLeftReg, 
+        Action<TReg, TReg> regToLeftReg, 
+        Action<TReg, Imm32> imm32ToLeftReg,
+        Action<TReg, Imm8> imm8ToLeftReg,
+
+        Action<TReg, RM64> memToRightReg,
+        Action<TReg, Imm32> imm32ToRightReg,
+        Action<TReg, Imm8> imm8ToRightReg) where TReg : Register 
     {
+        TReg leftAsReg;
+        if (!left.IsReg<TReg>(out leftAsReg))
+        {
+            if (right.IsReg<TReg>(out var rightAsReg))
+            {
+                if (left.IsRM64) memToRightReg(rightAsReg, left.RM64);
+                else if (left.IsImm32) imm32ToRightReg(rightAsReg, left.Imm32);
+                else if (left.IsImm8) imm8ToRightReg(rightAsReg, left.Imm8);
+                else throw new InvalidOperationException($"unexpected left RM or immediate type");
+                return rightAsReg;
+            }
 
-        // First, if it is memory to memory, dump left hand side to a register
-        if (rmLeft is Mem64 leftAsMem)
-        {
-            if (right is Mem64)
-                rmLeft = moveLeftToReg(leftAsMem);
-            else if (right is Imm32)
-                rmLeft = moveLeftToReg(leftAsMem);
+            if (left.IsImm32) leftAsReg = dumpImm32LeftToReg(left.Imm32);
+            else if (left.IsImm8) leftAsReg = dumpImm8LeftToReg(left.Imm8);
+            else if (left.IsRM64) leftAsReg  = dumpMemLeftToReg(left.RM64);
+            else throw new InvalidOperationException($"unexpected left RM or immediate type");
+            
         }
-        else if (rmLeft is TImm leftAsImm && right is Mem64)
-            rmLeft = moveImmLeftToReg(leftAsImm);
-        if (rmLeft is TReg left)
-        {
-            if (right is Mem64 mem) memToReg(left, mem);
-            else if (right is TReg reg) regToReg(left, reg);
-            else if (right is TImm immNN) immToReg(left, immNN);
-            else throw new InvalidOperationException($"unexpected right RM type '{right.GetType()}'");
-        }
-        else if (rmLeft is Mem64 memLeft)
-        {
-            if (right is TReg reg) regToMem(memLeft, reg);
-            else throw new InvalidOperationException($"unexpected right RM type '{right.GetType()}'");
-        }
-        else if (rmLeft is TImm immLeft)
-        {
-            if (right is TReg reg) regToImm(immLeft, reg);
-            else throw new InvalidOperationException($"unexpected right RM type '{right.GetType()}'");
-        }
-        else throw new InvalidOperationException($"unexpected left RM type '{rmLeft.GetType()}'");
+
+        if (right.IsReg<TReg>(out var rightReg)) regToLeftReg(leftAsReg, rightReg);
+        else if (right.IsRM64) memToLeftReg(leftAsReg, right.RM64);
+        else if (right.IsImm32) imm32ToLeftReg(leftAsReg, right.Imm32);
+        else if (right.IsImm8) imm8ToLeftReg(leftAsReg, right.Imm8);
+        else throw new InvalidOperationException($"unexpected RM or immediate type '{right.GetType()}'");
+
+        return leftAsReg;
     }
 
 }
 
-internal class CompilationUnit
+internal class RMOrImmediate
 {
-    private Imm8? _imm8;
-    private Imm32? _imm32;
-    private RM rm;
+    public bool IsImmediate => _imm != null;
+    public bool IsImm8 => _imm is Imm8;
+    public bool IsImm32 => _imm is Imm32;
+    public bool IsRM => _rm != null;
+    public bool IsRM64 => _rm is RM64;
+    public bool IsReg<TReg>(out TReg reg) where TReg : Register
+    {
+        reg = default!;
+        if (IsRM && RM is TReg typedReg)
+        {
+            reg = typedReg;
+            return true;
+        }
+        return false;
+    }
+    public Imm8 Imm8 => _imm as Imm8 ?? throw new ArgumentNullException(nameof(Imm8));
+    public Imm32 Imm32 => _imm as Imm32 ?? throw new ArgumentNullException(nameof(Imm32));
+    public RM RM => _rm ?? throw new ArgumentNullException(nameof(RM));
+    public RM64 RM64 => _rm as RM64 ?? throw new ArgumentNullException(nameof(RM64));
+
+    public RMOrImmediate(Immediate imm)
+    {
+        _imm = imm;
+    }
+    public RMOrImmediate(RM rm)
+    {
+        _rm = rm;
+    }
+
+    private Immediate? _imm;
+    private RM? _rm;
+
 }
