@@ -580,7 +580,7 @@ public class MineralCompiler
             (Imm32 imm) => _asm.Mov(leftReg, imm),
             (Imm8 imm) => throw new InvalidOperationException("unsupported division by imm8"));
 
-        OperatorFactory.Handle<Reg64>(
+        OperatorFactory.Handle(
             leftReg, rmRight,
             (reg, mem) =>
             {
@@ -596,12 +596,6 @@ public class MineralCompiler
             {
                 _asm.Cqo();
                 _asm.Mov(rightReg, imm);
-                _asm.Idiv(rightReg);
-            },
-            (Reg64 reg, Imm8 imm) => 
-            {
-                _asm.Cqo();
-                _asm.Mov(rightReg, Imm32.Create(imm.Value));
                 _asm.Idiv(rightReg);
             });
 
@@ -665,38 +659,33 @@ public class MineralCompiler
                 (Imm32 imm) => _asm.Mov(leftReg, imm),
                 (Imm8 imm) => _asm.Mov(leftReg.ToReg8(), imm.Value)); 
 
-            OperatorFactory.Handle<Reg64>(
+            OperatorFactory.Handle(
                 leftReg, rmRight,
                 (reg, mem) => _asm.Sub(reg, mem),
                 (dest, src) => _asm.Sub(dest, (RM64)src),
-                (reg, imm) => _asm.Sub(reg, imm.Value),
-                (reg, imm) => _asm.Sub(reg.ToReg8(), imm.Value));
+                (reg, imm) => _asm.Sub(reg, imm.Value));
 
 
         }
         else if (op == OperatorType.Addition)
         {
-            OperatorFactory.HandleCommutative<Reg64>(rmLeft, rmRight,
+            rmReturn = OperatorFactory.HandleCommutative(rmLeft, rmRight,
                 (mem) => { _asm.Mov(leftReg, mem); return leftReg; },
                 (imm) => { _asm.Mov(leftReg, imm); return leftReg; },
-                (imm) => { _asm.Mov(leftReg, imm); return leftReg; },
+
                 (reg, mem) => _asm.Add(reg, mem),
                 (dest, src) => _asm.Add(dest, (RM64)src),
-                (reg, imm) => _asm.Add(reg, imm.Value),
-                (imm, reg) => { _asm.Add(reg, imm.Value); rmReturn = reg; },
-                (mem, reg) => { _asm.Add(reg, mem); rmReturn = reg; });
+                (reg, imm) => _asm.Add(reg, imm.Value));
 
         }
         else if (op == OperatorType.Multiplication)
         {
-            OperatorFactory.HandleCommutative<Reg64, Imm32>(rmLeft, rmRight,
+            rmReturn = OperatorFactory.HandleCommutative(rmLeft, rmRight,
                 (mem) => { _asm.Mov(leftReg, mem); return leftReg; },
                 (imm) => { _asm.Mov(leftReg, imm); return leftReg; },
                 (reg, mem) => _asm.Imul(reg, mem),
                 (dest, src) => _asm.Imul(dest, src),
-                (reg, imm) => _asm.Imul(reg, reg, imm.Value),
-                (imm, reg) => { _asm.Imul(reg, reg, imm.Value); rmReturn = reg; },
-                (mem, reg) => { _asm.Imul(reg, mem); rmReturn = reg; });
+                (reg, imm) => _asm.Imul(reg, reg, imm.Value));
         }
         else if (op == OperatorType.LessThan)
             rmReturn = HandleConditional(leftReg, rmLeft, rmRight, ConditionCodes.GE, "CL", "CL_END");
@@ -719,13 +708,13 @@ public class MineralCompiler
     private void HandleOperator(BinaryExpression binaryExpression, Reg64 leftReg, Reg64 rightReg, Xmm128 leftXmm, Xmm128 rightXmm, bool spillRightResult, Action thenBlock, Action elseBlock)
     {
         var op = binaryExpression.Operator;
-        Reg64? rmReturn = leftReg;
-        var rmRight = Compile(binaryExpression.Right, rightReg, rightXmm);
+        Reg64? rmReturn = null;
+        var rmRight = CompileToRMOrImmediate(binaryExpression.Right, rightReg, rightXmm);
 
         if (spillRightResult)
         {
             var interm = NextAvailableLocalStackSlot();
-            HandleRM(rmRight,
+            HandleRMOrImmediate(rmRight,
                 (mem) =>
                 {
                     if (mem.Register != Reg64.RBP)
@@ -733,27 +722,31 @@ public class MineralCompiler
                         // If register does not persist accross calls
                         _asm.Mov(rightReg, mem);
                         _asm.Mov(interm, rightReg);
-                        rmRight = interm;
+                        rmRight = new RMOrImmediate(interm);
                     }
 
                 },
-                (reg) => { _asm.Mov(interm, reg); rmRight = interm; },
+                (reg) => { _asm.Mov(interm, reg); rmRight = new RMOrImmediate(interm); },
                 (Imm32 imm) => {
+                    // Pass since immediates persist always
+                },
+                (Imm8 imm) => {
                     // Pass since immediates persist always
                 });
         }
 
-        var rmLeft = Compile(binaryExpression.Left, leftReg, leftXmm);
+        var rmLeft = CompileToRMOrImmediate(binaryExpression.Left, leftReg, leftXmm);
 
         if (op == OperatorType.Subtraction)
         {
             // Ensure lhs is in a register
-            HandleRM(rmLeft,
+            HandleRMOrImmediate(rmLeft,
                 (mem) => _asm.Mov(leftReg, mem),
                 (reg) => _asm.MovIfNeeded(leftReg, reg),
-                (Imm32 imm) => _asm.Mov(leftReg, imm));
+                (Imm32 imm) => _asm.Mov(leftReg, imm),
+                (Imm8 imm) => _asm.Mov(leftReg.ToReg8(), imm.Value));
 
-            OperatorFactory.Handle<Reg64, Imm32>(
+            OperatorFactory.Handle(
                 leftReg, rmRight,
                 (reg, mem) => _asm.Sub(reg, mem),
                 (dest, src) => _asm.Sub(dest, (RM64)src),
@@ -763,26 +756,23 @@ public class MineralCompiler
         }
         else if (op == OperatorType.Addition)
         {
-            OperatorFactory.HandleCommutative<Reg64, Imm32>(rmLeft, rmRight,
+            rmReturn = OperatorFactory.HandleCommutative(rmLeft, rmRight,
                 (mem) => { _asm.Mov(leftReg, mem); return leftReg; },
                 (imm) => { _asm.Mov(leftReg, imm); return leftReg; },
+
                 (reg, mem) => _asm.Add(reg, mem),
                 (dest, src) => _asm.Add(dest, (RM64)src),
-                (reg, imm) => _asm.Add(reg, imm.Value),
-                (imm, reg) => { _asm.Add(reg, imm.Value); rmReturn = reg; },
-                (mem, reg) => { _asm.Add(reg, mem); rmReturn = reg; });
+                (reg, imm) => _asm.Add(reg, imm.Value));
 
         }
         else if (op == OperatorType.Multiplication)
         {
-            OperatorFactory.HandleCommutative<Reg64, Imm32>(rmLeft, rmRight,
+            rmReturn = OperatorFactory.HandleCommutative(rmLeft, rmRight,
                 (mem) => { _asm.Mov(leftReg, mem); return leftReg; },
                 (imm) => { _asm.Mov(leftReg, imm); return leftReg; },
                 (reg, mem) => _asm.Imul(reg, mem),
                 (dest, src) => _asm.Imul(dest, src),
-                (reg, imm) => _asm.Imul(reg, reg, imm.Value),
-                (imm, reg) => { _asm.Imul(reg, reg, imm.Value); rmReturn = reg; },
-                (mem, reg) => { _asm.Imul(reg, mem); rmReturn = reg; });
+                (reg, imm) => _asm.Imul(reg, reg, imm.Value));
         }
         else if (op == OperatorType.LessThan)
             rmReturn = HandleConditionalBranch(leftReg, rmLeft, rmRight, ConditionCodes.GE, "CL", "CL_END", thenBlock, elseBlock);
@@ -814,11 +804,11 @@ public class MineralCompiler
         }
     }
 
-    private Reg64 HandleConditional(Reg64 leftReg, RM rmLeft, RM rmRight, byte conditionCode, string labelPrefix, string endLabelPrefix)
+    private Reg64 HandleConditional(Reg64 leftReg, RMOrImmediate rmLeft, RMOrImmediate rmRight, byte conditionCode, string labelPrefix, string endLabelPrefix)
     {
         // Note: condition code must be inverted for this logic to work
         // IE if test is less than, conditon code should be GE (greater equal)
-        OperatorFactory.Handle<Reg64, Imm32>(rmLeft, rmRight,
+        OperatorFactory.Handle(rmLeft, rmRight,
                     (mem) =>
                     {
                         _asm.Mov(leftReg, mem);
@@ -876,11 +866,11 @@ public class MineralCompiler
     }
 
 
-    private Reg64? HandleConditionalBranch(Reg64 leftReg, RM rmLeft, RM rmRight, byte conditionCode, string labelPrefix, string endLabelPrefix, Action ifBlock, Action elseBlock)
+    private Reg64? HandleConditionalBranch(Reg64 leftReg, RMOrImmediate rmLeft, RMOrImmediate rmRight, byte conditionCode, string labelPrefix, string endLabelPrefix, Action ifBlock, Action elseBlock)
     {
         // Note: condition code must be inverted for this logic to work
         // IE if test is less than, conditon code should be GE (greater equal)
-        OperatorFactory.Handle<Reg64, Imm32>(rmLeft, rmRight,
+        OperatorFactory.Handle(rmLeft, rmRight,
                     (mem) =>
                     {
                         _asm.Mov(leftReg, mem);
@@ -1322,91 +1312,133 @@ public class MineralCompiler
 internal static class OperatorFactory
 {
 
-    // 64 bit operations
+    #region 64 bit ops
 
-    internal static void Handle<TReg>(TReg left, RMOrImmediate right, Action<TReg, RM64> memToReg, Action<TReg, TReg> regToReg, Action<TReg, Imm32> imm32ToReg, Action<TReg, Imm8> imm8ToReg) where TReg : Register 
+    internal static void Handle(Reg64 left, RMOrImmediate right, Action<Reg64, RM64> memToReg, Action<Reg64, Reg64> regToReg, Action<Reg64, Imm32> imm32ToReg)
     {
-        if (right.IsReg<TReg>(out var rightAsReg)) regToReg(left, rightAsReg);
+        if (right.IsReg<Reg64>(out var rightAsReg)) regToReg(left, rightAsReg);
         else if (right.IsRM64) memToReg(left, right.RM64);
         else if (right.IsImm32) imm32ToReg(left, right.Imm32);
-        else if (right.IsImm8) imm8ToReg(left, right.Imm8);
         else throw new InvalidOperationException($"unexpected right RM type '{right.GetType()}'");
     }
 
-    public static void Handle<TReg>(RMOrImmediate rmLeft, RMOrImmediate right, Func<RM64, TReg> moveLeftToReg, Func<TReg, TReg> moveRegLeftToReg, Func<Imm32, TReg> moveImm32LeftToReg, Func<Imm8, TReg> moveImm8LeftToReg, 
-        Action<TReg, RM64> memToReg, Action<TReg, TReg> regToReg, Action<TReg, Imm32> imm32ToReg, Action<TReg, Imm8> imm8ToReg) where TReg : Register
+    public static void Handle(RMOrImmediate rmLeft, RMOrImmediate right, Func<RM64, Reg64> moveLeftToReg, Func<Reg64, Reg64> moveRegLeftToReg, Func<Imm32, Reg64> moveImm32LeftToReg,  
+        Action<Reg64, RM64> memToReg, Action<Reg64, Reg64> regToReg, Action<Reg64, Imm32> imm32ToReg)
     {
-        TReg left;
-        if (rmLeft.IsReg<TReg>(out var leftAsReg)) left = moveRegLeftToReg(leftAsReg);
+        Reg64 left;
+        if (rmLeft.IsReg<Reg64>(out var leftAsReg)) left = moveRegLeftToReg(leftAsReg);
         else if (rmLeft.IsRM64) left = moveLeftToReg(rmLeft.RM64);
         else if (rmLeft.IsImm32) left = moveImm32LeftToReg(rmLeft.Imm32);
-        else if (rmLeft.IsImm8) left = moveImm8LeftToReg(rmLeft.Imm8);
         else throw new InvalidOperationException($"unexpected RM or immediate type '{rmLeft.GetType()}'");
 
-        if (right.IsReg<TReg>(out var rightAsReg)) regToReg(left, rightAsReg);
+        if (right.IsReg<Reg64>(out var rightAsReg)) regToReg(left, rightAsReg);
         else if (right.IsRM64) memToReg(left, right.RM64);
         else if (right.IsImm32) imm32ToReg(left, right.Imm32);
-        else if (right.IsImm8) imm8ToReg(left, right.Imm8);
         else throw new InvalidOperationException($"unexpected RM or immediate type '{right.GetType()}'");
     }
 
-    public static void Handle<TReg, TImm>(RM rmLeft, RM right, Func<Mem64, TReg> moveLeftToReg, Func<TReg, TReg> moveRegLeftToReg, Func<TImm, TReg> moveImmLeftToReg, Action<TReg, Mem64> memToReg, Action<TReg, TReg> regToReg, Action<TReg, TImm> immToReg) where TReg : Register where TImm : Immediate
+
+    public static Reg64 HandleCommutative(RMOrImmediate left, RMOrImmediate right, 
+        Func<RM64, Reg64> dumpMemLeftToReg,    // These are used in the case of incompatible operands
+        Func<Imm32, Reg64> dumpImm32LeftToReg, // Mem to Mem, Imm to Imm, 
+                                               // Imm to Mem is also disallowed since destination should be a register
+
+        Action<Reg64, RM64> memToReg, 
+        Action<Reg64, Reg64> regToReg, 
+        Action<Reg64, Imm32> imm32ToReg) 
     {
-        TReg left;
-        if (rmLeft is Mem64 leftMem)
-            left = moveLeftToReg(leftMem);
-        else if (rmLeft is TReg leftAsReg) left = moveRegLeftToReg(leftAsReg);
-        else if (rmLeft is TImm imm) left = moveImmLeftToReg(imm);
-        else throw new InvalidOperationException($"unexpected left RM type '{rmLeft.GetType()}'");
-        if (right is Mem64 mem) memToReg(left, mem);
-        else if (right is TReg reg) regToReg(left, reg);
-        else if (right is TImm immNN) immToReg(left, immNN);
-        else throw new InvalidOperationException($"unexpected right RM type '{right.GetType()}'");
-    }
-
-
-
-    public static TReg HandleCommutative<TReg>(RMOrImmediate left, RMOrImmediate right, 
-        Func<RM64, TReg> dumpMemLeftToReg,       // These are used in the case of incompatible operands
-        Func<Imm32, TReg> dumpImm32LeftToReg, // Mem to Mem, Imm to Imm, 
-        Func<Imm8, TReg> dumpImm8LeftToReg,   // Imm to Mem is also disallowed since destination should be a register
-
-        Action<TReg, RM64> memToLeftReg, 
-        Action<TReg, TReg> regToLeftReg, 
-        Action<TReg, Imm32> imm32ToLeftReg,
-        Action<TReg, Imm8> imm8ToLeftReg,
-
-        Action<TReg, RM64> memToRightReg,
-        Action<TReg, Imm32> imm32ToRightReg,
-        Action<TReg, Imm8> imm8ToRightReg) where TReg : Register 
-    {
-        TReg leftAsReg;
-        if (!left.IsReg<TReg>(out leftAsReg))
+        Reg64 leftAsReg;
+        if (!left.IsReg(out leftAsReg))
         {
-            if (right.IsReg<TReg>(out var rightAsReg))
+            if (right.IsReg<Reg64>(out var rightAsReg))
             {
-                if (left.IsRM64) memToRightReg(rightAsReg, left.RM64);
-                else if (left.IsImm32) imm32ToRightReg(rightAsReg, left.Imm32);
-                else if (left.IsImm8) imm8ToRightReg(rightAsReg, left.Imm8);
+                if (left.IsRM64) memToReg(rightAsReg, left.RM64);
+                else if (left.IsImm32) imm32ToReg(rightAsReg, left.Imm32);
                 else throw new InvalidOperationException($"unexpected left RM or immediate type");
                 return rightAsReg;
             }
 
             if (left.IsImm32) leftAsReg = dumpImm32LeftToReg(left.Imm32);
-            else if (left.IsImm8) leftAsReg = dumpImm8LeftToReg(left.Imm8);
             else if (left.IsRM64) leftAsReg  = dumpMemLeftToReg(left.RM64);
             else throw new InvalidOperationException($"unexpected left RM or immediate type");
             
         }
 
-        if (right.IsReg<TReg>(out var rightReg)) regToLeftReg(leftAsReg, rightReg);
-        else if (right.IsRM64) memToLeftReg(leftAsReg, right.RM64);
-        else if (right.IsImm32) imm32ToLeftReg(leftAsReg, right.Imm32);
+        if (right.IsReg<Reg64>(out var rightReg)) regToReg(leftAsReg, rightReg);
+        else if (right.IsRM64) memToReg(leftAsReg, right.RM64);
+        else if (right.IsImm32) imm32ToReg(leftAsReg, right.Imm32);
+        else throw new InvalidOperationException($"unexpected RM or immediate type '{right.GetType()}'");
+
+        return leftAsReg;
+    }
+
+    #endregion
+
+
+    #region 8Bit Ops
+
+    internal static void Handle(Reg8 left, RMOrImmediate right, Action<Reg8, RM8> memToReg, Action<Reg8, Reg8> regToReg, Action<Reg8, Imm8> imm8ToReg)
+    {
+        if (right.IsReg<Reg8>(out var rightAsReg)) regToReg(left, rightAsReg);
+        else if (right.IsRM8) memToReg(left, right.RM8);
+        else if (right.IsImm8) imm8ToReg(left, right.Imm8);
+        else throw new InvalidOperationException($"unexpected right RM type '{right.GetType()}'");
+    }
+
+    public static void Handle(RMOrImmediate rmLeft, RMOrImmediate right, Func<RM8, Reg8> moveLeftToReg, Func<Reg8, Reg8> moveRegLeftToReg, Func<Imm8, Reg8> moveImm8LeftToReg,
+        Action<Reg8, RM8> memToReg, Action<Reg8, Reg8> regToReg, Action<Reg8, Imm8> imm8ToReg)
+    {
+        Reg8 left;
+        if (rmLeft.IsReg<Reg8>(out var leftAsReg)) left = moveRegLeftToReg(leftAsReg);
+        else if (rmLeft.IsRM64) left = moveLeftToReg(rmLeft.RM8);
+        else if (rmLeft.IsImm8) left = moveImm8LeftToReg(rmLeft.Imm8);
+        else throw new InvalidOperationException($"unexpected RM or immediate type '{rmLeft.GetType()}'");
+
+        if (right.IsReg<Reg8>(out var rightAsReg)) regToReg(left, rightAsReg);
+        else if (right.IsRM64) memToReg(left, right.RM8);
+        else if (right.IsImm8) imm8ToReg(left, right.Imm8);
+        else throw new InvalidOperationException($"unexpected RM or immediate type '{right.GetType()}'");
+    }
+
+
+    public static Reg8 HandleCommutative(RMOrImmediate left, RMOrImmediate right,
+        Func<RM8, Reg8> dumpMemLeftToReg,      // These are used in the case of incompatible operands
+                                               // Mem to Mem, Imm to Imm, 
+        Func<Imm8, Reg8> dumpImm8LeftToReg,   // Imm to Mem is also disallowed since destination should be a register
+
+        Action<Reg8, RM8> memToLeftReg,
+        Action<Reg8, Reg8> regToLeftReg,
+        Action<Reg8, Imm8> imm8ToLeftReg,
+
+        Action<Reg8, RM8> memToRightReg,
+        Action<Reg8, Imm8> imm8ToRightReg)
+    {
+        Reg8 leftAsReg;
+        if (!left.IsReg(out leftAsReg))
+        {
+            if (right.IsReg<Reg8>(out var rightAsReg))
+            {
+                if (left.IsRM64) memToRightReg(rightAsReg, left.RM8);
+                else if (left.IsImm8) imm8ToRightReg(rightAsReg, left.Imm8);
+                else throw new InvalidOperationException($"unexpected left RM or immediate type");
+                return rightAsReg;
+            }
+
+            if (left.IsImm8) leftAsReg = dumpImm8LeftToReg(left.Imm8);
+            else if (left.IsRM64) leftAsReg = dumpMemLeftToReg(left.RM8);
+            else throw new InvalidOperationException($"unexpected left RM or immediate type");
+
+        }
+
+        if (right.IsReg<Reg8>(out var rightReg)) regToLeftReg(leftAsReg, rightReg);
+        else if (right.IsRM64) memToLeftReg(leftAsReg, right.RM8);
         else if (right.IsImm8) imm8ToLeftReg(leftAsReg, right.Imm8);
         else throw new InvalidOperationException($"unexpected RM or immediate type '{right.GetType()}'");
 
         return leftAsReg;
     }
+
+    #endregion
 
 }
 
@@ -1416,6 +1448,7 @@ internal class RMOrImmediate
     public bool IsImm8 => _imm is Imm8;
     public bool IsImm32 => _imm is Imm32;
     public bool IsRM => _rm != null;
+    public bool IsRM8 => _rm is RM8;
     public bool IsRM64 => _rm is RM64;
     public bool IsReg<TReg>(out TReg reg) where TReg : Register
     {
@@ -1430,6 +1463,7 @@ internal class RMOrImmediate
     public Imm8 Imm8 => _imm as Imm8 ?? throw new ArgumentNullException(nameof(Imm8));
     public Imm32 Imm32 => _imm as Imm32 ?? throw new ArgumentNullException(nameof(Imm32));
     public RM RM => _rm ?? throw new ArgumentNullException(nameof(RM));
+    public RM8 RM8 => _rm as RM8 ?? throw new ArgumentNullException(nameof(RM8));
     public RM64 RM64 => _rm as RM64 ?? throw new ArgumentNullException(nameof(RM64));
 
     public RMOrImmediate(Immediate imm)
