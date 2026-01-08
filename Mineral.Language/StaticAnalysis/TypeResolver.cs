@@ -468,11 +468,17 @@ public class TypeResolver
             // Pass
         }
         else ResolveLValue(errors, module, context, assignmentStatement.AssignmentTarget);
-
-        if (!assignmentStatement.AssignmentTarget.ConcreteType.IsAssignableFrom(valueType))
+        if (assignmentStatement.AssignmentTarget is not DiscardLValue)
         {
-            errors.Add(assignmentStatement.AssignmentTarget, $"Cannot assign value of type '{valueType}' to lvalue of type '{assignmentStatement.AssignmentTarget.ConcreteType}");
+            if (assignmentStatement.Value is StackAllocateExpression sae)
+            {
+                if (!assignmentStatement.AssignmentTarget.ConcreteType.IsEqualTo(valueType))
+                    errors.Add(assignmentStatement.AssignmentTarget, $"Cannot assign value of type '{valueType}' to lvalue of type '{assignmentStatement.AssignmentTarget.ConcreteType}'");
+            }
+            else if (!assignmentStatement.AssignmentTarget.ConcreteType.IsAssignableFrom(valueType))
+                errors.Add(assignmentStatement.AssignmentTarget, $"Cannot assign value of type '{valueType}' to lvalue of type '{assignmentStatement.AssignmentTarget.ConcreteType}'");
         }
+        
 
         var errorTarget = assignmentStatement.ErrorTarget;
         if (errorTarget != null)
@@ -585,7 +591,7 @@ public class TypeResolver
             {
                 callExpression.TagAsType(functionContext.ReturnType);
                 callExpression.FunctionContext = functionContext;
-                return; // we can return early since the functionKey check guarantees the correct types
+                return; // we can return early since the functionKey check guarantees the correct types (or at least assignable types)
             }
         }
         else if (callExpression.Callee is MemberAccessExpression memberAccessExpression 
@@ -859,7 +865,11 @@ public class ModuleContext
     public Dictionary<Token, MethodGroup> Methods { get; set; }
     public Dictionary<Token, ModuleContext> ImportedModules { get; set; }
     private ModuleErrors? _moduleErrors;
-    public ModuleErrors GetOrCreateModuleErrors() => _moduleErrors ?? new();
+    public ModuleErrors GetOrCreateModuleErrors()
+    {
+        if (_moduleErrors == null) _moduleErrors = new(); 
+        return _moduleErrors;  
+    }
 
     public bool TryAddImportedModule(Token moduleName)
     {
@@ -950,7 +960,7 @@ public class MethodGroup
 
     public bool TryGetOverload(FunctionKey functionKey, out FunctionContext functionOverload)
     {
-        functionOverload = new(Module); // TODO: will never be null when returning true, trusting the programmer for now!
+        functionOverload = new(Module);
         if (Overloads.TryGetValue(functionKey, out var potentialOverload) && potentialOverload != null)
         {
             functionOverload = potentialOverload;
@@ -961,7 +971,7 @@ public class MethodGroup
 
     public bool TryGetPublicOverload(FunctionKey functionKey, out FunctionContext functionOverload)
     {
-        functionOverload = new(Module); // TODO: will never be null when returning true, trusting the programmer for now!
+        functionOverload = new(Module); 
         if (Overloads.TryGetValue(functionKey, out var potentialOverload) && potentialOverload != null && potentialOverload.IsPublic)
         {
             functionOverload = potentialOverload;

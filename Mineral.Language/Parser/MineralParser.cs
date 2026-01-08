@@ -259,11 +259,15 @@ public class MineralParser: TokenParser
         {
             if (!TryConvertToLValue(memberAccessExpression.Instance, out var instanceAsLValue)) return false;
             lvalue = new InstanceMemberLValue(instanceAsLValue, memberAccessExpression.MemberToAccess);
+            lvalue.Start = expression.Start;
+            lvalue.End = expression.End;
             return true;
         }
         if (expression is IdentifierExpression identifierExpression)
         {
             lvalue = new IdentifierLValue(identifierExpression.Symbol);
+            lvalue.Start = identifierExpression.Start;
+            lvalue.End = identifierExpression.End;
             return true;
         }
         return false;
@@ -308,34 +312,41 @@ public class MineralParser: TokenParser
 
     private ExpressionBase ParseExpression()
     {
-        var start = Current().Start;
-        ExpressionBase expression;
-        if (AdvanceIfMatch(TokenTypes.StackAllocate)) expression = ParseStackAllocate();
-        else if (AdvanceIfMatch(TokenTypes.ReferenceType))
+        return Capture(() =>
         {
-            var potentialReference = ParseGetOrCallExpression();
-            if (potentialReference is MemberAccessExpression memberAccessExpression)
+            ExpressionBase expression;
+            if (AdvanceIfMatch(TokenTypes.StackAllocate)) expression = Capture(() => ParseStackAllocate());
+            else if (AdvanceIfMatch(TokenTypes.ReferenceType))
             {
-                expression = new ReferenceExpression(memberAccessExpression.Instance, memberAccessExpression.MemberToAccess);
+                var potentialReference = Capture(() => ParseGetOrCallExpression());
+                if (potentialReference is MemberAccessExpression memberAccessExpression)
+                {
+                    expression = new ReferenceExpression(memberAccessExpression.Instance, memberAccessExpression.MemberToAccess);
+                }
+                else if (potentialReference is IdentifierExpression identifierExpression)
+                    expression = new ReferenceExpression(null, identifierExpression.Symbol);
+                else throw new ParsingException(Previous(), $"unexpected expression type on right hand side of 'ref'");
             }
-            else if (potentialReference is IdentifierExpression identifierExpression)
-                expression = new ReferenceExpression(null, identifierExpression.Symbol);
-            else throw new ParsingException(Previous(), $"unexpected expression type on right hand side of 'ref'");
-        }
-        else expression = ParseGetOrCallExpression();
-        expression.End = Previous().End;
-        return expression;
+            else expression = Capture(() => ParseGetOrCallExpression());
+
+            return expression;
+        });
+        
     }
 
     private ConditionalExpression ParseConditionalExpression()
     {
-        var lhs = ParseGetOrCallExpression();
-        if (AdvanceIfMatchOperator(out var op))
+        return Capture<ConditionalExpression>(() =>
         {
-            var rhs = ParseGetOrCallExpression();
-            return new BinaryExpression(lhs, rhs, op);
-        }
-        return lhs;
+            var lhs = Capture(() => ParseGetOrCallExpression());
+            if (AdvanceIfMatchOperator(out var op))
+            {
+                var rhs = Capture(() => ParseGetOrCallExpression());
+                return new BinaryExpression(lhs, rhs, op);
+            }
+            return lhs;
+        });
+        
     }
 
 
@@ -358,7 +369,7 @@ public class MineralParser: TokenParser
 
     private OperableExpresson ParseGetOrCallExpression()
     {
-        var lhs = ParseIdentifier();
+        var lhs = Capture(() => ParseIdentifier());
         var arguments = new List<ExpressionBase>();
         while (Match(TokenTypes.LParen) || Match(TokenTypes.Dot))
         {
@@ -395,7 +406,8 @@ public class MineralParser: TokenParser
             return new IdentifierExpression(Previous());
         }
 
-        return ParseLiteralExpression();
+        return Capture(() => ParseLiteralExpression());
+
     }
 
     private OperableExpresson ParseLiteralExpression()
@@ -508,6 +520,16 @@ public class MineralParser: TokenParser
             _errors.Add(pe);
             if (!Seek(tokenTypeToSeekPast)) throw new UnrecoverableTokenException(pe);
         }
+    }
+
+    private TExpression Capture<TExpression>(Func<TExpression> parseFunction) where TExpression : ExpressionBase
+    {
+        var start = Current().Start;
+        var value = parseFunction();
+        var end = Previous().End;
+        value.Start = start;
+        value.End = end;
+        return value;
     }
 }
 

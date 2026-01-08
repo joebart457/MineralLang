@@ -57,6 +57,8 @@ public static class TokenTypes
     public const string Integer = BuiltinTokenTypes.Integer;
     public const string Float = BuiltinTokenTypes.Float;
     public const string Double = BuiltinTokenTypes.Double;
+    public const string EoLComment = BuiltinTokenTypes.EndOfLineComment;
+    public const string MultiLineComment = BuiltinTokenTypes.MultiLineComment;
 
     // Enclosed
     public const string ImportPath = "ImportPath";
@@ -112,9 +114,11 @@ public static class TokenizerFactory
             new(TokenTypes.While, "while"),
 
             new(TokenTypes.Null, "null"),
+            new(TokenTypes.EoLComment, "//"),
 
             new(TokenTypes.String, "\"", enclosingLeft: "\"", enclosingRight: "\""),
             new(TokenTypes.ImportPath, "`", enclosingLeft: "`", enclosingRight: "`"),
+            new(TokenTypes.MultiLineComment, "/*", enclosingLeft: "/*", enclosingRight: "*/"),
         };
         settings.AllowNegatives = true;
         return new(rules, settings);

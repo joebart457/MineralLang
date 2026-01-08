@@ -1,14 +1,19 @@
 module io
 
 func `kernel32.dll` AllocConsole() void;
+func `kernel32.dll` ExitProcess(int rc) void;
+func `kernel32.dll` GetLastError() int;
 func `kernel32.dll` GetStdHandle(int hndl) ref[void];
 
 func `kernel32.dll` WriteConsoleA(ref[void] hOut, string msg, int lenMsg, int charsWritten, int res) int;
 
 
 pub func log(string msg, int len) void {
-	_ = AllocConsole();
-	hOut = GetStdHandle(-11);
+	
+ 	hOut = GetStdHandle(-11);
+
+	written = 0;
 	_ = WriteConsoleA(hOut, msg, len, 0, 0);
+	_ = ExitProcess(0);
 }
 

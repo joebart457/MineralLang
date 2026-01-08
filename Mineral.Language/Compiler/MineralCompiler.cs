@@ -31,8 +31,8 @@ public class MineralCompiler
             var error = _asm.OutputX86Assembly64Bit(outputTarget, entryPoint, Path.GetFileName(outputPath), out var peFile);
             var bytes = peFile.AssembleProgram(entryPoint);
             File.WriteAllBytes(outputPath, bytes);
-            //var text = peFile.EmitDecodedAssembly(entryPoint);
-            //File.WriteAllText(outputPath, text);
+            var text = peFile.EmitDecodedAssembly(entryPoint);
+            File.WriteAllText(Path.ChangeExtension(outputPath, ".asm"), text);
         } catch(Exception ex)
         {
             return (false, ex.Message);
@@ -109,7 +109,7 @@ public class MineralCompiler
         {
             _asm.Xor(Reg64.RDX, (RM64)Reg64.RDX); // zero out error
             _asm.TearDownStackFrame();
-            _asm.Return();
+            _asm.Ret();
         }
         _asm.ExitFunction();
     }
@@ -251,7 +251,8 @@ public class MineralCompiler
                     _asm.Mov(Reg64.RAX, mem);
                     _asm.Mov(assignmentTarget, Reg64.RAX);
                 },
-                (reg) => _asm.Mov(assignmentTarget, reg),
+                (reg) => 
+                    _asm.Mov(assignmentTarget, reg),
                 (imm) => _asm.Mov(assignmentTarget, imm));
         }
         else throw new InvalidOperationException($"unexpected assignment of type '{assignmentStatement.Value.ConcreteType}' to '{assignmentStatement.AssignmentTarget.ConcreteType}'");
@@ -316,25 +317,30 @@ public class MineralCompiler
         switch (expression)
         {
             case LiteralExpression literalExpression:
-                return Compile(literalExpression);
+                return Compile(literalExpression, desiredReg, desiredXmm);
             
             default:
                 return new RMOrImmediate(Compile(expression, desiredReg, desiredXmm));
         }
     }
 
-    private RMOrImmediate Compile(LiteralExpression literalExpression)
+    private RMOrImmediate Compile(LiteralExpression literalExpression, Reg64 desiredReg, Xmm128 desiredXmm)
     {
         if (literalExpression.Value is int i)
             return new RMOrImmediate(Imm32.Create(i));
-        else if (literalExpression.Value is float flt)
-            return new RMOrImmediate(_asm.AddFloatingPoint(flt));
-        else if (literalExpression.Value is string str)
-            return new RMOrImmediate(_asm.AddString(str));
         else if (literalExpression.Value is null)
             return new RMOrImmediate(Imm32.Create(0));
-        else
-            throw new InvalidOperationException($"Unknown literal type for value '{literalExpression.Value}'");
+        else if (literalExpression.Value is float flt)
+            return new RMOrImmediate(_asm.AddFloatingPoint(flt));
+        else if(literalExpression.Value is string str)
+        {
+            var mem = _asm.AddString(str);
+            _asm.Lea(desiredReg, mem);
+            //_asm.Mov(desiredReg, Imm64.Create(mem.Symbol));
+            return new RMOrImmediate(desiredReg);
+            
+        }
+        else throw new InvalidOperationException($"Unknown literal type for value '{literalExpression.Value}'");
     }
 
     private RM Compile(ExpressionBase expression, Reg64 desiredReg, Xmm128 desiredXmm)
@@ -376,7 +382,7 @@ public class MineralCompiler
             return HandleRM(instanceLocation,
                 mem =>
                 {
-                    return Mem64.Create((Reg64)mem.Register, mem.Displacement.Offset + offset);
+                    return Mem64.Create((Reg64)mem.Register, mem.Displacement.Offset - offset);
                 },
                 reg =>
                 {
@@ -412,7 +418,7 @@ public class MineralCompiler
             return HandleRM(rm,
                 mem =>
                 {
-                    _asm.Lea(desiredReg, Mem64.Create((Reg64)mem.Register, mem.Displacement.Offset + offset));
+                    _asm.Lea(desiredReg, Mem64.Create((Reg64)mem.Register, mem.Displacement.Offset - offset));
                     return desiredReg;
                 },
                 reg =>
@@ -1636,13 +1642,15 @@ public class MineralCompiler
             var rmArg = CompileToRMOrImmediate(argument, Reg64.RAX, Xmm128.XMM0);
             HandleRMOrImmediateForPush(rmArg,
                 (mem) => _asm.Push((RM64)mem),
-                (reg) => _asm.Push(reg),
+                (reg) => 
+                _asm.Push(reg),
                 (xmm) => {
                     _asm.Sub(Reg64.RSP, 8);
-                    _asm.Movq(Mem64.Create(Reg64.RSP), Xmm128.XMM0);
+                    _asm.Movsd(Mem64.Create(Reg64.RSP), Xmm128.XMM0);
                 },
                 (imm) => _asm.Push(imm.Value),
-                (imm) => _asm.Push((sbyte)imm.Value));
+                (imm) => 
+                _asm.Push((sbyte)imm.Value));
         }
         if (callExpression.FunctionContext != null)
         {
