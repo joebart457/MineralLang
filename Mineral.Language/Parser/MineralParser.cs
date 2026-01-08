@@ -3,7 +3,6 @@ using Mineral.Language.Expressions;
 using Mineral.Language.LValues;
 using Mineral.Language.Statements;
 using Mineral.Language.StaticAnalysis;
-using System.Globalization;
 using Tokenizer.Core;
 using Tokenizer.Core.Constants;
 using Tokenizer.Core.Exceptions;
@@ -212,7 +211,7 @@ public class MineralParser: TokenParser
 
     private WhileStatement ParseWhile()
     {
-        var condition = ParseConditionalExpression();
+        var condition = CaptureConditionalExpression();
         var thenBlock = ParseBlock();
         return new WhileStatement(condition, thenBlock);
     }
@@ -223,7 +222,7 @@ public class MineralParser: TokenParser
         if (AdvanceIfMatch(TokenTypes.Discard)) assignmentTarget = new DiscardLValue(Previous());
         else
         {
-            var potentialLValue = ParseConditionalExpression();
+            var potentialLValue = CaptureConditionalExpression();
             if (AdvanceIfMatch(TokenTypes.QuestionMark))
             {
 
@@ -246,9 +245,11 @@ public class MineralParser: TokenParser
             errorTarget = ParseLValue();
         }
 
-        Consume(TokenTypes.Equal, "expect '=' in assignment statement");
-        var value = ParseExpression();
+        var isDerefAssignment = AdvanceIfMatch(TokenTypes.DerefAssignment);
+        if (!isDerefAssignment) Consume(TokenTypes.Assignment, "expect '=' in assignment statement");
+        var value = CaptureAssignmentRValue();
         Consume(TokenTypes.Semicolon, "expect statement to end with ';'");
+        if (isDerefAssignment) return new DereferenceAssignmentStatement(assignmentTarget, errorTarget, value);
         return new AssignmentStatement(assignmentTarget, errorTarget, value);
     }
 
@@ -298,46 +299,50 @@ public class MineralParser: TokenParser
 
     private ErrorStatement ParseError()
     {
-        var value = ParseExpression();
+        var value = CaptureExpression();
         Consume(TokenTypes.Semicolon, "expect statement to end with ';'");
         return new ErrorStatement(value);
     }
 
     private ReturnStatement ParseReturn()
     {
-        var value = ParseExpression();
+        var value = CaptureExpression();
         Consume(TokenTypes.Semicolon, "expect statement to end with ';'");
         return new ReturnStatement(value);
     }
 
-    private ExpressionBase ParseExpression()
+
+    private ExpressionBase CaptureAssignmentRValue()
     {
-        return Capture(() =>
+        if (AdvanceIfMatch(TokenTypes.StackAllocate)) return Capture(() => ParseStackAllocate());
+        return CaptureExpression();
+    }
+
+    private ExpressionBase CaptureExpression()
+    {
+        return Capture<ExpressionBase>(() =>
         {
-            ExpressionBase expression;
-            if (AdvanceIfMatch(TokenTypes.StackAllocate)) expression = Capture(() => ParseStackAllocate());
-            else if (AdvanceIfMatch(TokenTypes.ReferenceType))
+            if (AdvanceIfMatch(TokenTypes.ReferenceType))
             {
                 var potentialReference = Capture(() => ParseGetOrCallExpression());
                 if (potentialReference is MemberAccessExpression memberAccessExpression)
                 {
-                    expression = new ReferenceExpression(memberAccessExpression.Instance, memberAccessExpression.MemberToAccess);
+                    return new ReferenceExpression(memberAccessExpression.Instance, memberAccessExpression.MemberToAccess);
                 }
                 else if (potentialReference is IdentifierExpression identifierExpression)
-                    expression = new ReferenceExpression(null, identifierExpression.Symbol);
+                   return new ReferenceExpression(null, identifierExpression.Symbol);
                 else throw new ParsingException(Previous(), $"unexpected expression type on right hand side of 'ref'");
             }
-            else expression = Capture(() => ParseGetOrCallExpression());
-
-            return expression;
+            else return CaptureConditionalExpression();
         });
         
     }
 
-    private ConditionalExpression ParseConditionalExpression()
+    private ConditionalExpression CaptureConditionalExpression()
     {
         return Capture<ConditionalExpression>(() =>
         {
+
             var lhs = Capture(() => ParseGetOrCallExpression());
             if (AdvanceIfMatchOperator(out var op))
             {
@@ -367,6 +372,7 @@ public class MineralParser: TokenParser
         return new StackAllocateExpression(typeToAllocate);
     }
 
+
     private OperableExpresson ParseGetOrCallExpression()
     {
         var lhs = Capture(() => ParseIdentifier());
@@ -381,7 +387,7 @@ public class MineralParser: TokenParser
                     {
                         DoWithSeek(TokenTypes.Comma , () =>
                         {
-                            var argument = ParseExpression();
+                            var argument = CaptureExpression();
                             arguments.Add(argument);
                         });
                     } while (AdvanceIfMatch(TokenTypes.Comma));
@@ -401,6 +407,11 @@ public class MineralParser: TokenParser
 
     private OperableExpresson ParseIdentifier()
     {
+        if (AdvanceIfMatch(TokenTypes.Deref))
+        {
+            var expression = CaptureConditionalExpression();
+            return new DereferenceExpression(expression);
+        }
         if (AdvanceIfMatch(TokenTypes.Word))
         {
             return new IdentifierExpression(Previous());

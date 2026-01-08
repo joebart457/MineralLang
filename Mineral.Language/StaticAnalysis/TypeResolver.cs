@@ -346,6 +346,9 @@ public class TypeResolver
             case AssignmentStatement assignmentStatement:
                 Resolve(errors, module, context, assignmentStatement);
                 break;
+            case DereferenceAssignmentStatement dereferenceAssignmentStatement:
+                Resolve(errors, module, context, dereferenceAssignmentStatement);
+                break;
             default:
                 errors.Add(statement, $"Unknown statement type '{statement.GetType()}'");
                 break;
@@ -472,6 +475,8 @@ public class TypeResolver
         {
             if (assignmentStatement.Value is StackAllocateExpression sae)
             {
+                if (assignmentStatement.AssignmentTarget.ConcreteType.IsValidParameterType())
+                    errors.Add(assignmentStatement.AssignmentTarget, $"type '{assignmentStatement.AssignmentTarget.ConcreteType}' is not stack allocatable");
                 if (!assignmentStatement.AssignmentTarget.ConcreteType.IsEqualTo(valueType))
                     errors.Add(assignmentStatement.AssignmentTarget, $"Cannot assign value of type '{valueType}' to lvalue of type '{assignmentStatement.AssignmentTarget.ConcreteType}'");
             }
@@ -486,6 +491,65 @@ public class TypeResolver
             if (!(valueType is CallableType callableType1 && callableType1.IsErrorable))
             {
                 errors.Add(assignmentStatement.Value, $"expect errorable expression on right hand side of error assignment");
+            }
+            if (errorTarget is IdentifierLValue errorIdentifierExpression)
+            {
+                errorTarget.TagAsType(ResolveOrCreateVariable(errors, context, errorIdentifierExpression.VariableName, NativeTypes.Error));
+            }
+            else if (errorTarget is DiscardLValue)
+            {
+                // Pass
+            }
+            else ResolveLValue(errors, module, context, errorTarget);
+            if (!errorTarget.ConcreteType.IsErrorType())
+            {
+                errors.Add(errorTarget, $"Error target must be of error type, but got '{errorTarget.ConcreteType}'");
+            }
+        }
+    }
+
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, DereferenceAssignmentStatement dereferenceAssignmentStatement)
+    {
+        Resolve(errors, module, context, dereferenceAssignmentStatement.Value);
+        var valueType = dereferenceAssignmentStatement.Value.ConcreteType;
+
+  
+
+        if (dereferenceAssignmentStatement.AssignmentTarget is IdentifierLValue identifierExpression)
+        {
+            dereferenceAssignmentStatement.AssignmentTarget.TagAsType(ResolveOrCreateVariable(errors, context, identifierExpression.VariableName, valueType));
+        }
+        else if (dereferenceAssignmentStatement.AssignmentTarget is DiscardLValue)
+        {
+            errors.Add(dereferenceAssignmentStatement.AssignmentTarget, $"unexpected discard lvalue in dereference assignment");
+        }
+        else ResolveLValue(errors, module, context, dereferenceAssignmentStatement.AssignmentTarget);
+
+        ConcreteType referencedType;
+        if (dereferenceAssignmentStatement.AssignmentTarget.ConcreteType is not ReferenceType referenceType)
+        {
+            errors.Add(dereferenceAssignmentStatement.AssignmentTarget, $"left hand side of dereference assignment must be reference type");
+            referencedType = valueType;
+        }
+        else referencedType = referenceType.ReferencedType;
+
+        if (dereferenceAssignmentStatement.AssignmentTarget is not DiscardLValue)
+        {
+            if (dereferenceAssignmentStatement.Value is StackAllocateExpression sae)
+            {
+                errors.Add(sae, $"unable to stack allocate dereferenced value");
+            }
+            else if (!referencedType.IsAssignableFrom(valueType))
+                errors.Add(dereferenceAssignmentStatement.AssignmentTarget, $"Cannot assign value of type '{valueType}' to lvalue of type '{referencedType}'");
+        }
+
+
+        var errorTarget = dereferenceAssignmentStatement.ErrorTarget;
+        if (errorTarget != null)
+        {
+            if (!(valueType is CallableType callableType1 && callableType1.IsErrorable))
+            {
+                errors.Add(dereferenceAssignmentStatement.Value, $"expect errorable expression on right hand side of error assignment");
             }
             if (errorTarget is IdentifierLValue errorIdentifierExpression)
             {
@@ -558,6 +622,9 @@ public class TypeResolver
                 break;
             case ReferenceExpression referenceExpression:
                 Resolve(errors, module, context, referenceExpression);
+                break;
+            case DereferenceExpression dereferenceExpression:
+                Resolve(errors, module, context, dereferenceExpression);
                 break;
             default:
                 errors.Add(expression, $"Unknown expression type '{expression.GetType()}'");
@@ -752,7 +819,22 @@ public class TypeResolver
         }
         referenceExpression.TagAsType(new ReferenceType(variableType));
     }
-    
+
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, DereferenceExpression dereferenceExpression)
+    {
+        Resolve(errors, module, context, dereferenceExpression.Target);
+        var targetType = dereferenceExpression.Target.ConcreteType;
+        if (targetType is not ReferenceType referenceType)
+        {
+            errors.Add(dereferenceExpression, $"invalid dereference of non-reference type '{targetType}'");
+            return;
+        }
+        if (referenceType.ReferencedType.IsVoidType()) errors.Add(dereferenceExpression, $"unable to dereference to void type");
+        else if (referenceType.ReferencedType is StructType) errors.Add(dereferenceExpression, $"unable to dereference to type '{referenceType.ReferencedType}'");
+        dereferenceExpression.TagAsType(referenceType.ReferencedType);
+    }
+
+
 
 }
 

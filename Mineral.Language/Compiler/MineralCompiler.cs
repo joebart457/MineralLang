@@ -4,10 +4,7 @@ using Mineral.Language.LValues;
 using Mineral.Language.Statements;
 using Mineral.Language.StaticAnalysis;
 using System.Runtime.InteropServices;
-using Tokenizer.Core.Models;
 using X86_64Assembler;
-using static System.Runtime.InteropServices.JavaScript.JSType;
-
 
 namespace Mineral.Language.Compiler;
 
@@ -132,6 +129,9 @@ public class MineralCompiler
             case AssignmentStatement assignmentStatement:
                 Compile(assignmentStatement);
                 break;
+            case DereferenceAssignmentStatement dereferenceAssignmentStatement:
+                Compile(dereferenceAssignmentStatement);
+                break;
             default:
                 throw new InvalidOperationException($"Unknown statement type '{statement.GetType()}'");
         }
@@ -201,6 +201,7 @@ public class MineralCompiler
         var rmCondition = Compile(conditionalStatement.ConditionalTarget, Reg64.RAX, Xmm128.XMM0);
 
         // Ensure value in RAX
+        // Conditional will always return in Reg64 since it is integer or reference type truthiness
         var regToTest = Reg64.RAX;
         HandleRM(rmCondition,
             (mem) => _asm.Mov(regToTest, mem),
@@ -272,6 +273,65 @@ public class MineralCompiler
         }
     }
 
+    private void Compile(DereferenceAssignmentStatement dereferenceAssignmentStatement)
+    {
+        var rmValue = CompileToRMOrImmediate(dereferenceAssignmentStatement.Value, Reg64.RAX, Xmm128.XMM0);
+        var assignmentTarget = CompileAndReturnAssignmentTargetFromLValue(dereferenceAssignmentStatement.AssignmentTarget, Reg64.RCX);
+        var desiredXmm = Xmm128.XMM1;
+        if (assignmentTarget != null)
+        {
+            _asm.Mov(Reg64.RCX, assignmentTarget);
+            assignmentTarget = Mem64.Create(Reg64.RCX);
+        }
+        if (assignmentTarget == null) { }
+        else if (dereferenceAssignmentStatement.AssignmentTarget.IsFloat32())
+        {
+            HandleRMOrImmediate(rmValue,
+                (mem) =>
+                {
+                    _asm.Movss(desiredXmm, mem);
+                    _asm.Movss(assignmentTarget, desiredXmm);
+                },
+                (reg) => _asm.Movss(assignmentTarget, reg));
+        }
+        else if (dereferenceAssignmentStatement.AssignmentTarget.IsFloat64())
+        {
+            HandleRMOrImmediate(rmValue,
+                (mem) =>
+                {
+                    _asm.Mov(Reg64.RAX, mem);
+                    _asm.Mov(assignmentTarget, Reg64.RAX);
+                },
+                (reg) => _asm.Movsd(assignmentTarget, reg));
+        }
+        else if (dereferenceAssignmentStatement.AssignmentTarget.IsIntegerType() || dereferenceAssignmentStatement.AssignmentTarget.IsReferenceType() || dereferenceAssignmentStatement.AssignmentTarget.IsStringType())
+        {
+            HandleRMOrImmediate(rmValue,
+                (mem) =>
+                {
+                    _asm.Mov(Reg64.RAX, mem);
+                    _asm.Mov(assignmentTarget, Reg64.RAX);
+                },
+                (reg) =>
+                    _asm.Mov(assignmentTarget, reg),
+                (imm) => _asm.Mov(assignmentTarget, imm));
+        }
+        else throw new InvalidOperationException($"unexpected assignment of type '{dereferenceAssignmentStatement.Value.ConcreteType}' to '{dereferenceAssignmentStatement.AssignmentTarget.ConcreteType}'");
+
+
+
+        // Errors returned in RDX
+        var errorTarget = dereferenceAssignmentStatement.ErrorTarget;
+        if (errorTarget != null)
+        {
+            var errorTargetMemoryLocation = CompileAndReturnAssignmentTargetFromLValue(errorTarget, Reg64.RDX);
+
+            if (errorTargetMemoryLocation != null)
+            {
+                _asm.Mov(errorTargetMemoryLocation, Reg64.RDX);
+            } // else pass for discard
+        }
+    }
 
 
     private Mem64? CompileAndReturnAssignmentTargetFromLValue(LValue lValue, Reg64 desiredReg)
@@ -357,6 +417,8 @@ public class MineralCompiler
                 return Compile(memberAccessExpression, desiredReg, desiredXmm);
             case ReferenceExpression referenceExpression:
                 return Compile(referenceExpression, desiredReg, desiredXmm);
+            case DereferenceExpression dereferenceExpression:
+                return Compile(dereferenceExpression, desiredReg, desiredXmm);
             default:
                 throw new InvalidOperationException($"Unknown expression type '{expression.GetType()}'");
         }
@@ -438,6 +500,21 @@ public class MineralCompiler
                     _asm.Lea(desiredReg, Mem64.Create(reg, offset));
                     return desiredReg;
                 });
+    }
+
+    private Mem64 Compile(DereferenceExpression dereferenceExpression, Reg64 desiredReg, Xmm128 desiredXmm)
+    {
+        var rmTarget = Compile(dereferenceExpression.Target, desiredReg, desiredXmm);
+        if (rmTarget is Mem mem)
+        {
+            _asm.Mov(desiredReg, mem);
+            return Mem64.Create(desiredReg);
+        }
+        else if (rmTarget is Reg64 reg)
+        {
+            return Mem64.Create(desiredReg);
+        }
+        else throw new InvalidOperationException($"invalid rm type during dereference '{rmTarget.GetType()}'");
     }
 
     #region Binary
@@ -1738,6 +1815,9 @@ public class MineralCompiler
             case AssignmentStatement assignmentStatement:
                 GatherMetadata(assignmentStatement);
                 break;
+            case DereferenceAssignmentStatement dereferenceAssignmentStatement:
+                GatherMetadata(dereferenceAssignmentStatement);
+                break;
             case ErrorStatement errorStatement:
                 GatherMetadata(errorStatement);
                 break;
@@ -1762,6 +1842,12 @@ public class MineralCompiler
     {
         GatherMetadata(assignmentStatement.Value);
         assignmentStatement.Metadata.StackSlotsNeeded = assignmentStatement.Value.Metadata.StackSlotsNeeded;
+    }
+
+    private void GatherMetadata(DereferenceAssignmentStatement dereferenceAssignmentStatement)
+    {
+        GatherMetadata(dereferenceAssignmentStatement.Value);
+        dereferenceAssignmentStatement.Metadata.StackSlotsNeeded = dereferenceAssignmentStatement.Value.Metadata.StackSlotsNeeded;
     }
 
     private void GatherMetadata(ErrorStatement errorStatement)
@@ -1825,6 +1911,9 @@ public class MineralCompiler
                 break;
             case StackAllocateExpression stackAllocateExpression:
                 GatherMetadata(stackAllocateExpression);
+                break;
+            case DereferenceExpression dereferenceExpression:
+                GatherMetadata(dereferenceExpression);
                 break;
             default:
                 throw new InvalidOperationException($"Unknown expression type '{expression.GetType()}'");
@@ -1894,6 +1983,13 @@ public class MineralCompiler
             referenceExpression.Metadata.ContainsCall = false;
             referenceExpression.Metadata.StackSlotsNeeded = 0;
         }
+    }
+
+    private void GatherMetadata(DereferenceExpression dereferenceExpression)
+    {
+        GatherMetadata(dereferenceExpression.Target);
+        dereferenceExpression.Metadata.ContainsCall = dereferenceExpression.Target.Metadata.ContainsCall;
+        dereferenceExpression.Metadata.StackSlotsNeeded = dereferenceExpression.Target.Metadata.StackSlotsNeeded;
     }
 
     private void GatherMetadata(StackAllocateExpression stackAllocateExpression)

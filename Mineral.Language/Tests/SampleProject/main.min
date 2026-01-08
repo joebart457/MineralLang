@@ -13,10 +13,23 @@ type Test{
 
 pub func main() int {
 	x = stackalloc Test;
-	x.message = "Hello There!";
-	_ = io.log(x.message, 12);
+	//x.message = "Hello There!";
+	//_ = io.log(x.message, 12);
+	len = 7;
+	_ = test_deref(ref len);
 
 	return 0; 
 }
 
+
+func test_deref(ref[int] pLen) void {
+	msg = "Dereference works!";
+
+	_ = log_indirect(ref msg, pLen);
+}
+
+func log_indirect(ref[string] msg, ref[int] length) void {
+	msg := "no more";
+	_ = io.log(deref msg, deref length);
+}
 

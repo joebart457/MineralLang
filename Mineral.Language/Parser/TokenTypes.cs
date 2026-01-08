@@ -7,7 +7,7 @@ namespace Mineral.Language.Parser;
 
 public static class TokenTypes
 {
-    public const string Equal = "Equal";
+    public const string Assignment = "Assignment";
     public const string Semicolon = "Semicolon";
     public const string Comma = "Comma";
     public const string QuestionMark = "QuestionMark";
@@ -20,6 +20,7 @@ public static class TokenTypes
     public const string Exclamation = "Exclamation";
     public const string Dot = "Dot";
     public const string Discard = "Discard";
+    public const string DerefAssignment = "DerefAssignment";
 
     // Operators
     public const string Addition = "Addition";
@@ -48,6 +49,7 @@ public static class TokenTypes
     public const string StackAllocate = "StackAllocate";
     public const string Else = "Else";
     public const string While = "While";
+    public const string Deref = "Deref";
 
     public const string Null = "Null";
 
@@ -72,7 +74,7 @@ public static class TokenizerFactory
         var settings = TokenizerSettings.Default;
         var rules = new List<TokenizerRule>()
         {
-            new(TokenTypes.Equal, "="),
+            new(TokenTypes.Assignment, "="),
             new(TokenTypes.Semicolon, ";"),
             new(TokenTypes.Comma, ","),
             new(TokenTypes.QuestionMark, "?"),
@@ -85,6 +87,7 @@ public static class TokenizerFactory
             new(TokenTypes.Exclamation, "!"),
             new(TokenTypes.Dot, "."),
             new(TokenTypes.Discard, "_"),
+            new(TokenTypes.DerefAssignment, ":="),
 
             // Operators
             new(TokenTypes.Addition, "+"),
@@ -112,6 +115,7 @@ public static class TokenizerFactory
             new(TokenTypes.StackAllocate, "stackalloc"),
             new(TokenTypes.Else, "else"),
             new(TokenTypes.While, "while"),
+            new(TokenTypes.Deref, "deref"),
 
             new(TokenTypes.Null, "null"),
             new(TokenTypes.EoLComment, "//"),

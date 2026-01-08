@@ -14,6 +14,6 @@ pub func log(string msg, int len) void {
 
 	written = 0;
 	_ = WriteConsoleA(hOut, msg, len, 0, 0);
-	_ = ExitProcess(0);
+	_ = ExitProcess(written);
 }
 
