@@ -14,6 +14,7 @@ public class TypeResolver
 {
     private static readonly Dictionary<Token, ConcreteType> BuiltinTypes = new Dictionary<Token, ConcreteType>(new TokenEqualityComparer())
     {
+        { new(TokenTypes.Word, "byte", Location.Zero, Location.Zero ), NativeTypes.Byte },
         { new(TokenTypes.Word, "int", Location.Zero, Location.Zero ), NativeTypes.Int },
         { new(TokenTypes.Word, "float32", Location.Zero, Location.Zero ), NativeTypes.Float32 },
         { new(TokenTypes.Word, "float64", Location.Zero, Location.Zero ), NativeTypes.Float64 },

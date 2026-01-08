@@ -16,7 +16,12 @@ public enum OperatorType
     GreaterThan,
     LessThan,
     GreaterThanOrEqual,
-    LessThanOrEqual
+    LessThanOrEqual,
+
+    // Bitwise
+    BitwiseOr,
+    BitwiseAnd,
+    BitwiseXor,
 }
 
 public class BinaryExpression : ConditionalExpression // BinaryExpression is not an operable expression (as a language choice)

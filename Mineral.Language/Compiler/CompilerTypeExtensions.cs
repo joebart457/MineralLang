@@ -88,6 +88,11 @@ public static class CompilerTypeExtensions
         return expression.ConcreteType.IsEqualTo(NativeTypes.Int);
     }
 
+    public static bool IsByteType(this ExpressionBase expression)
+    {
+        return expression.ConcreteType.IsEqualTo(NativeTypes.Byte);
+    }
+
     public static bool IsReferenceType(this ExpressionBase expression)
     {
         return expression.ConcreteType is ReferenceType;
