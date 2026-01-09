@@ -16,7 +16,7 @@ public static class CompilerTypeExtensions
         return accum;
     }
 
-    private static int GetActualSize(this ConcreteType concreteType) => concreteType is StructType s ? GetActualSizeOfStruct(s) : GetActualSizeHelper(concreteType);
+    public static int GetActualSize(this ConcreteType concreteType) => concreteType is StructType s ? GetActualSizeOfStruct(s) : GetActualSizeHelper(concreteType);
     private static int GetActualSizeOfStruct(StructType structType)
     {
         int accum = 0;

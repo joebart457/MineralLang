@@ -627,6 +627,12 @@ public class TypeResolver
             case DereferenceExpression dereferenceExpression:
                 Resolve(errors, module, context, dereferenceExpression);
                 break;
+            case CastExpression castExpression:
+                Resolve(errors, module, context, castExpression);
+                break;
+            case BinaryExpression binaryExpression:
+                Resolve(errors, module, context, binaryExpression);
+                break;
             default:
                 errors.Add(expression, $"Unknown expression type '{expression.GetType()}'");
                 break;
@@ -783,6 +789,8 @@ public class TypeResolver
             literalExpression.TagAsType(new ConcreteType(BuiltinType.String));
         else if (literalExpression.Value is null)
             literalExpression.TagAsType(new NullPointerType());
+        else if (literalExpression.Value is byte)
+            literalExpression.TagAsType(NativeTypes.Byte);
         else
             errors.Add(literalExpression, $"Unknown literal type for value '{literalExpression.Value}'");
     }
@@ -792,7 +800,7 @@ public class TypeResolver
         var typeToAllocate = ResolveDeclaredType(errors, module, stackAllocateExpression.TypeToAllocate);
         stackAllocateExpression.TagAsType(typeToAllocate);
     }
-    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, ReferenceExpression referenceExpression)
+    private void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, ReferenceExpression referenceExpression)
     {
         if (referenceExpression.Instance != null)
         {
@@ -821,7 +829,7 @@ public class TypeResolver
         referenceExpression.TagAsType(new ReferenceType(variableType));
     }
 
-    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, DereferenceExpression dereferenceExpression)
+    private void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, DereferenceExpression dereferenceExpression)
     {
         Resolve(errors, module, context, dereferenceExpression.Target);
         var targetType = dereferenceExpression.Target.ConcreteType;
@@ -835,7 +843,17 @@ public class TypeResolver
         dereferenceExpression.TagAsType(referenceType.ReferencedType);
     }
 
-
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, CastExpression castExpression)
+    {
+        var targetType = ResolveDeclaredType(errors, module, castExpression.TargetType);
+        Resolve(errors, module, context, castExpression.Value);
+        var valueType = castExpression.Value.ConcreteType;
+        if (!valueType.IsCastableTo(targetType))
+            errors.Add(castExpression, $"unable to cast '{valueType}' to type '{targetType}'");
+        else if (valueType.IsEqualTo(targetType))
+            errors.Add(castExpression, $"redundant cast of '{valueType}' to type '{targetType}'");
+        castExpression.TagAsType(targetType);
+    }
 
 }
 

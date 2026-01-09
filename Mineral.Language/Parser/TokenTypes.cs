@@ -21,6 +21,7 @@ public static class TokenTypes
     public const string Dot = "Dot";
     public const string Discard = "Discard";
     public const string DerefAssignment = "DerefAssignment";
+    public const string Cast = "Cast";
 
     // Operators
     public const string Addition = "Addition";
@@ -34,6 +35,9 @@ public static class TokenTypes
     public const string LessThan = "LessThan";
     public const string GreaterThanOrEqual = "GreaterThanOrEqual";
     public const string LessThanOrEqual = "LessThanOrEqual";
+    public const string BitwiseAnd = "BitwiseAnd";
+    public const string BitwiseOr = "BitwiseOr";
+    public const string BitwiseXor = "BitwiseXor";
 
     // Native types
     public const string ReferenceType = "ReferenceType";
@@ -52,6 +56,7 @@ public static class TokenTypes
     public const string Deref = "Deref";
 
     public const string Null = "Null";
+    public const string Hex = "Hex";
 
     // Convenience
     public const string Word = BuiltinTokenTypes.Word;
@@ -101,6 +106,9 @@ public static class TokenizerFactory
             new(TokenTypes.LessThanOrEqual, "<="),
             new(TokenTypes.GreaterThan, ">"),
             new(TokenTypes.GreaterThanOrEqual, ">="),
+            new(TokenTypes.BitwiseAnd, "&"),
+            new(TokenTypes.BitwiseOr, "|"),
+            new(TokenTypes.BitwiseXor, "^"),
 
 
             new(TokenTypes.ReferenceType, "ref"),
@@ -118,6 +126,7 @@ public static class TokenizerFactory
             new(TokenTypes.Deref, "deref"),
 
             new(TokenTypes.Null, "null"),
+            new(TokenTypes.Hex, "0x"),
             new(TokenTypes.EoLComment, "//"),
 
             new(TokenTypes.String, "\"", enclosingLeft: "\"", enclosingRight: "\""),

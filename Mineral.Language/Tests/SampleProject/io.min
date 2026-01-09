@@ -7,12 +7,16 @@ func `kernel32.dll` GetStdHandle(int hndl) ref[void];
 
 func `kernel32.dll` WriteConsoleA(ref[void] hOut, string msg, int lenMsg, int charsWritten, int res) int;
 
+import {
+	"str"
+}
+
 
 pub func log(string msg, int len) void {
 	
  	hOut = GetStdHandle(-11);
 
-	written = 0;
+	written = str.strcmp("test", "test");
 	_ = WriteConsoleA(hOut, msg, len, 0, 0);
 	_ = ExitProcess(written);
 }

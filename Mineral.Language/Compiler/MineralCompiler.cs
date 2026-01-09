@@ -455,14 +455,16 @@ public class MineralCompiler
             return new RMOrImmediate(Imm32.Create(0));
         else if (literalExpression.Value is float flt)
             return new RMOrImmediate(_asm.AddFloatingPoint(flt));
-        else if(literalExpression.Value is string str)
+        else if (literalExpression.Value is string str)
         {
             var mem = _asm.AddString(str);
             _asm.Lea(desiredReg, mem);
             //_asm.Mov(desiredReg, Imm64.Create(mem.Symbol)); // absolute addressing
             return new RMOrImmediate(desiredReg);
-            
+
         }
+        else if (literalExpression.Value is byte b)
+            return new RMOrImmediate(new Imm8(b));
         else throw new InvalidOperationException($"Unknown literal type for value '{literalExpression.Value}'");
     }
 
@@ -482,6 +484,8 @@ public class MineralCompiler
                 return Compile(referenceExpression, desiredReg, desiredXmm);
             case DereferenceExpression dereferenceExpression:
                 return Compile(dereferenceExpression, desiredReg, desiredXmm);
+            case CastExpression castExpression:
+                return Compile(castExpression, desiredReg, desiredXmm);
             default:
                 throw new InvalidOperationException($"Unknown expression type '{expression.GetType()}'");
         }
@@ -578,6 +582,58 @@ public class MineralCompiler
             return Mem64.Create(desiredReg);
         }
         else throw new InvalidOperationException($"invalid rm type during dereference '{rmTarget.GetType()}'");
+    }
+
+    private RM Compile(CastExpression castExpression, Reg64 desiredReg, Xmm128 desiredXmm)
+    {
+        var rmValue = Compile(castExpression.Value, desiredReg, desiredXmm);
+        if (castExpression.IsFloat32() && castExpression.Value.IsFloat64())
+        {
+            HandleRM(rmValue,
+                (mem) => _asm.Cvtsd2ss(desiredXmm, mem),
+                (Xmm128 xmm) => _asm.Cvtsd2ss(desiredXmm, xmm));
+            return desiredXmm;
+        }
+        if (castExpression.IsFloat32() && castExpression.Value.IsIntegerType())
+        {
+            HandleRM(rmValue,
+                (Mem mem) => _asm.Cvtsi2ss(desiredXmm, (RM64)mem),
+                (Reg64 reg) => _asm.Cvtsi2ss(desiredXmm, reg));
+            return desiredXmm;
+        }
+
+        if (castExpression.IsFloat64() && castExpression.Value.IsFloat32())
+        {
+            HandleRM(rmValue,
+                (Mem mem) => _asm.Cvtss2sd(desiredXmm, mem),
+                (Xmm128 xmm) => _asm.Cvtss2sd(desiredXmm, xmm));
+            return desiredXmm;
+        }
+        if (castExpression.IsFloat64() && castExpression.Value.IsIntegerType())
+        {
+            HandleRM(rmValue,
+                (Mem mem) => _asm.Cvtsi2sd(desiredXmm, (RM64)mem),
+                (Reg64 reg) => _asm.Cvtsi2sd(desiredXmm, reg));
+            return desiredXmm;
+        }
+
+        if (castExpression.IsIntegerType() && castExpression.Value.IsFloat32())
+        {
+            HandleRM(rmValue,
+                (mem) => _asm.Cvtss2si(desiredReg, mem),
+                (xmm) => _asm.Cvtss2si(desiredReg, xmm));
+            return desiredReg;
+        }
+        if (castExpression.IsIntegerType() && castExpression.Value.IsFloat64())
+        {
+            HandleRM(rmValue,
+                (Mem mem) => _asm.Cvtsd2si(desiredReg, mem),
+                (Reg64 reg) => _asm.Cvtsd2si(desiredReg, reg));
+            return desiredReg;
+        }
+
+        // otherwise no action is required, return value directly
+        return rmValue;
     }
 
     #region Binary
@@ -2361,6 +2417,9 @@ public class MineralCompiler
             case DereferenceExpression dereferenceExpression:
                 GatherMetadata(dereferenceExpression);
                 break;
+            case CastExpression castExpression:
+                GatherMetadata(castExpression);
+                break;
             default:
                 throw new InvalidOperationException($"Unknown expression type '{expression.GetType()}'");
         }
@@ -2444,6 +2503,13 @@ public class MineralCompiler
         // Stack allocation should not occur naturally in expression trees
     }
 
+    private void GatherMetadata(CastExpression castExpression)
+    {
+        GatherMetadata(castExpression.Value);
+        castExpression.Metadata.ContainsCall = castExpression.Value.Metadata.ContainsCall;
+        castExpression.Metadata.StackSlotsNeeded = castExpression.Value.Metadata.StackSlotsNeeded;
+    }
+
     #endregion
 
     #region Helpers
@@ -2516,6 +2582,15 @@ public class MineralCompiler
         else if (rmOrImm.IsMem) handleMemory(rmOrImm.Mem);
         else
             throw new InvalidOperationException($"unexpected RM or immediate type '{rmOrImm.GetType()}'");
+    }
+
+    private void HandleRM(RM rm, Action<Mem> handleMemory, Action<Xmm128> handleRegister)
+    {
+        // Floating points will not have immediates
+        if (rm is Xmm128 reg) handleRegister(reg);
+        else if (rm is Mem mem) handleMemory(mem);
+        else
+            throw new InvalidOperationException($"unexpected RM type '{rm.GetType()}'");
     }
 
 

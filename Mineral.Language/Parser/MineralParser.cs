@@ -3,6 +3,7 @@ using Mineral.Language.Expressions;
 using Mineral.Language.LValues;
 using Mineral.Language.Statements;
 using Mineral.Language.StaticAnalysis;
+using System.Globalization;
 using Tokenizer.Core;
 using Tokenizer.Core.Constants;
 using Tokenizer.Core.Exceptions;
@@ -171,20 +172,7 @@ public class MineralParser: TokenParser
             return new FunctionDeclaration(functionName, returnType, paramters, new(), isErrorable, isPublic, importPath);
         }
 
-        var statements = new List<StatementBase>();
-        Consume(TokenTypes.LCurly, "expect function body ");
-        if (!AdvanceIfMatch(TokenTypes.RCurly))
-        {
-            do
-            {
-                DoWithSeek(TokenTypes.Semicolon, () =>
-                {
-                    var statement = ParseStatement();
-                    statements.Add(statement);
-                });
-            } while (!AtEnd() && !Match(TokenTypes.RCurly));
-            Consume(TokenTypes.RCurly, "expect enclosing '}' for function body");
-        }
+        var statements = ParseBlock();
 
         return new FunctionDeclaration(functionName, returnType, paramters, statements, isErrorable, isPublic, importPath);   
     }
@@ -212,6 +200,7 @@ public class MineralParser: TokenParser
     private WhileStatement ParseWhile()
     {
         var condition = CaptureConditionalExpression();
+      
         var thenBlock = ParseBlock();
         return new WhileStatement(condition, thenBlock);
     }
@@ -286,7 +275,7 @@ public class MineralParser: TokenParser
                     var statement = ParseStatement();
                     block.Add(statement);
                 });
-            } while (AdvanceIfMatch(TokenTypes.Semicolon));
+            } while (!AtEnd() && !Match(TokenTypes.RCurly));
             Consume(TokenTypes.RCurly, "expect enclosing '}' in block");
         }
         else
@@ -322,6 +311,7 @@ public class MineralParser: TokenParser
     {
         return Capture<ExpressionBase>(() =>
         {
+            
             if (AdvanceIfMatch(TokenTypes.ReferenceType))
             {
                 var potentialReference = Capture(() => ParseGetOrCallExpression());
@@ -342,7 +332,6 @@ public class MineralParser: TokenParser
     {
         return Capture<ConditionalExpression>(() =>
         {
-
             var lhs = Capture(() => ParseGetOrCallExpression());
             if (AdvanceIfMatchOperator(out var op))
             {
@@ -350,10 +339,15 @@ public class MineralParser: TokenParser
                 return new BinaryExpression(lhs, rhs, op);
             }
             return lhs;
-        });
-        
+        }); 
     }
 
+    private CastExpression ParseCastExpression()
+    {
+        var targetType = ParseTypeSymbol();
+        var value = CaptureExpression();
+        return new CastExpression(targetType, value);
+    }
 
     private bool AdvanceIfMatchOperator(out OperatorType op) 
     {
@@ -407,15 +401,13 @@ public class MineralParser: TokenParser
 
     private OperableExpresson ParseIdentifier()
     {
+        if (AdvanceIfMatch(TokenTypes.BitwiseXor)) return ParseCastExpression();
         if (AdvanceIfMatch(TokenTypes.Deref))
         {
-            var expression = CaptureConditionalExpression();
+            var expression = ParseGetOrCallExpression();
             return new DereferenceExpression(expression);
         }
-        if (AdvanceIfMatch(TokenTypes.Word))
-        {
-            return new IdentifierExpression(Previous());
-        }
+        if (AdvanceIfMatch(TokenTypes.Word)) return new IdentifierExpression(Previous());
 
         return Capture(() => ParseLiteralExpression());
 
@@ -446,6 +438,12 @@ public class MineralParser: TokenParser
         if (AdvanceIfMatch(TokenTypes.Null))
         {
             return new LiteralExpression(null);
+        }
+        if (AdvanceIfMatch(TokenTypes.Hex))
+        {
+            Consume(TokenTypes.Integer, "expect integer hex value");
+            if (Previous().Lexeme.Length <= 2 && byte.TryParse(Previous().Lexeme, NumberStyles.HexNumber, null, out var b)) return new LiteralExpression((byte)(b * isNegative));
+            throw new ParsingException(Previous(), $"unable to parse value '{Previous().Lexeme}' to byte");
         }
         var token = Current();
         throw new ParsingException(token, $"unexpected token {token}");

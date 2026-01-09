@@ -1,0 +1,19 @@
+
+
+
+
+
+
+module str
+
+
+pub func strcmp(string aStr, string bStr) int {
+	a =  ^ref[byte] aStr;
+	b =  ^ref[byte] bStr;
+	notDone = 1;
+	while notDone {
+		deref a != deref b? return 8;
+		deref a == 0x00? return 1;
+	}
+	return 0;
+}

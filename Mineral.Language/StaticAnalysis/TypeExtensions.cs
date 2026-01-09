@@ -1,4 +1,5 @@
 ﻿
+using Mineral.Language.Compiler;
 using Mineral.Language.Expressions;
 using Tokenizer.Core.Models;
 
@@ -99,6 +100,13 @@ internal static class TypeExtensions
     }
 
 
+    public static bool IsCastableTo(this ConcreteType from, ConcreteType targetType)
+    {
+        // essentially a reinterpret_cast except for numeric types
+        if (from.IsNumericType() && targetType.IsNumericType()) return true;
+        return from.GetActualSize() == targetType.GetActualSize();
+    }
+
     public static bool IsConditionalTestable(this ConcreteType type)
     {
         if (type is ReferenceType) return true;
@@ -185,7 +193,7 @@ internal static class TypeExtensions
             case OperatorType.NotEqual:
             {
                 resultType = NativeTypes.Int;
-                return left.IsAssignableFrom(right) && (left.IsConditionalTestable() || left.IsEqualTo(NativeTypes.Float32) || left.IsEqualTo(NativeTypes.Float64));
+                return left.IsAssignableFrom(right) && (left.IsConditionalTestable() || left.IsEqualTo(NativeTypes.Float32) || left.IsEqualTo(NativeTypes.Float64) || left.IsEqualTo(NativeTypes.Byte));
             }
             case OperatorType.GreaterThan:
             case OperatorType.LessThan:

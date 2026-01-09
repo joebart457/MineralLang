@@ -1,5 +1,6 @@
 ﻿using Mineral.Language.Compiler;
 using Mineral.Language.Parser;
+using Mineral.Language.Reducer;
 using Mineral.Language.StaticAnalysis;
 using System;
 using System.Collections.Generic;
@@ -37,6 +38,7 @@ public static class CompilerService
                 return -2;
             }
 
+            ASTReducer.Reduce(programContext);
             var (success, compilationError) = compiler.CompileProgram("testOutput.exe", programContext);
             if (!success)
             {
