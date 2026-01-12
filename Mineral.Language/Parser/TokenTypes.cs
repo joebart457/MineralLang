@@ -54,6 +54,8 @@ public static class TokenTypes
     public const string Else = "Else";
     public const string While = "While";
     public const string Deref = "Deref";
+    public const string Break = "Break";
+    public const string Continue = "Continue";
 
     public const string Null = "Null";
     public const string Hex = "Hex";
@@ -124,6 +126,8 @@ public static class TokenizerFactory
             new(TokenTypes.Else, "else"),
             new(TokenTypes.While, "while"),
             new(TokenTypes.Deref, "deref"),
+            new(TokenTypes.Break, "Break"),
+            new(TokenTypes.Continue, "Continue"),
 
             new(TokenTypes.Null, "null"),
             new(TokenTypes.Hex, "0x"),

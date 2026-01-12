@@ -23,7 +23,9 @@ public class ExpressionBase
 public class CompilerMetadata
 {
     public int SU { get; set; } // Sethi-Ullman number for minimal register spills
-    public bool ContainsCall { get; set; }
+    public bool ContainsCallOrBinary { get; set; }
     public int StackSlotsNeeded { get; set; }
+    public string ContinueLabel { get; set; } = ""; // used for loops only
+    public string BreakLabel { get; set; } = ""; // used for loops only
 
 }

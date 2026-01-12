@@ -47,6 +47,10 @@ internal static class ASTReducer
                 return Reduce(assignmentStatement);
             case DereferenceAssignmentStatement dereferenceAssignmentStatement:
                 return Reduce(dereferenceAssignmentStatement);
+            case ContinueStatement continueStatement:
+                return Reduce(continueStatement);
+            case BreakStatement breakStatement:
+                return Reduce(breakStatement);
             default:
                 return statement;
         }
@@ -64,6 +68,16 @@ internal static class ASTReducer
     {
         dereferenceAssignmentStatement.Value = Reduce(dereferenceAssignmentStatement.Value);
         return dereferenceAssignmentStatement;
+    }
+
+    private static StatementBase? Reduce(ContinueStatement continueStatement)
+    {
+        return continueStatement;
+    }
+
+    private static StatementBase? Reduce(BreakStatement breakStatement)
+    {
+        return breakStatement;
     }
 
     private static StatementBase? Reduce(ErrorStatement errorStatement)

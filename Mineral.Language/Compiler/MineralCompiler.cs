@@ -135,6 +135,12 @@ public class MineralCompiler
             case DereferenceAssignmentStatement dereferenceAssignmentStatement:
                 Compile(dereferenceAssignmentStatement);
                 break;
+            case BreakStatement breakStatement:
+                Compile(breakStatement);
+                break;
+            case ContinueStatement continueStatement:
+                Compile(continueStatement);
+                break;
             default:
                 throw new InvalidOperationException($"Unknown statement type '{statement.GetType()}'");
         }
@@ -232,15 +238,19 @@ public class MineralCompiler
 
     private void Compile(WhileStatement whileStatement)
     {
+
+
+        var loopIdentifier = _asm.CreateUniqueLabel("");
+        var loopTop = $"L{loopIdentifier}";
+        var endLabel = $"LCTST_END{loopIdentifier}";
+        whileStatement.Metadata.ContinueLabel = loopTop;
+        whileStatement.Metadata.BreakLabel = endLabel;
+
         var thenBlock = () =>
         {
             foreach (var stmt in whileStatement.ThenBlock)
                 Compile(stmt);
         };
-
-        var loopIdentifier = _asm.CreateUniqueLabel("");
-        var loopTop = $"L{loopIdentifier}";
-        var endLabel = $"LCTST_END{loopIdentifier}";
 
         _asm.Label(loopTop);
         var rmCondition = Compile(whileStatement.ConditionalTarget, Reg64.RAX, Xmm128.XMM0);
@@ -428,6 +438,22 @@ public class MineralCompiler
             return null;
         }
         else throw new NotSupportedException($"lvalue of type '{lValue.GetType()}' is not a supported assignment target");
+    }
+
+    private void Compile(BreakStatement breakStatement)
+    {
+        var breakLabel = breakStatement.ParentLoop?.Metadata.BreakLabel;
+        if (string.IsNullOrEmpty(breakLabel))
+            throw new InvalidOperationException($"cannot generate code for break statement occurring outside of loop");
+        _asm.Jmp(Rel32.Create(breakLabel));
+    }
+
+    private void Compile(ContinueStatement continueStatement)
+    {
+        var continueLabel = continueStatement.ParentLoop?.Metadata.ContinueLabel;
+        if (string.IsNullOrEmpty(continueLabel))
+            throw new InvalidOperationException($"cannot generate code for continue statement occurring outside of loop");
+        _asm.Jmp(Rel32.Create(continueLabel));
     }
 
     #endregion
@@ -673,7 +699,7 @@ public class MineralCompiler
         var op = binaryExpression.Operator;
 
         // Case 1: Lhs = CALL, Rhs = NonCall
-        if (binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        if (binaryExpression.Left.Metadata.ContainsCallOrBinary && !binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
 
             if (op == OperatorType.Division || op == OperatorType.Modulus)
@@ -684,7 +710,7 @@ public class MineralCompiler
         }
 
         // Case 2: Lhs = NonCall, Rhs = CALL
-        if (!binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        if (!binaryExpression.Left.Metadata.ContainsCallOrBinary && binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
 
             if (op == OperatorType.Division || op == OperatorType.Modulus)
@@ -695,7 +721,7 @@ public class MineralCompiler
         }
 
         // Case 3: Lhs = CALL, Rhs = CALL
-        if (binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        if (binaryExpression.Left.Metadata.ContainsCallOrBinary && binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
 
             if (op == OperatorType.Division || op == OperatorType.Modulus)
@@ -706,7 +732,7 @@ public class MineralCompiler
         }
 
         // Case 3: Lhs = NonCall, Rhs = NonCall
-        if (!binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        if (!binaryExpression.Left.Metadata.ContainsCallOrBinary && !binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
 
             if (op == OperatorType.Division || op == OperatorType.Modulus)
@@ -725,7 +751,7 @@ public class MineralCompiler
         var op = binaryExpression.Operator;
 
         // Case 1: Lhs = CALL, Rhs = NonCall
-        if (binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        if (binaryExpression.Left.Metadata.ContainsCallOrBinary && !binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
 
             if (op == OperatorType.Division || op == OperatorType.Modulus)
@@ -736,7 +762,7 @@ public class MineralCompiler
         }
 
         // Case 2: Lhs = NonCall, Rhs = CALL
-        if (!binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        if (!binaryExpression.Left.Metadata.ContainsCallOrBinary && binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
 
             if (op == OperatorType.Division || op == OperatorType.Modulus)
@@ -747,7 +773,7 @@ public class MineralCompiler
         }
 
         // Case 3: Lhs = CALL, Rhs = CALL
-        if (binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        if (binaryExpression.Left.Metadata.ContainsCallOrBinary && binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
 
             if (op == OperatorType.Division || op == OperatorType.Modulus)
@@ -758,7 +784,7 @@ public class MineralCompiler
         }
 
         // Case 3: Lhs = NonCall, Rhs = NonCall
-        if (!binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        if (!binaryExpression.Left.Metadata.ContainsCallOrBinary && !binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
 
             if (op == OperatorType.Division || op == OperatorType.Modulus)
@@ -1148,19 +1174,19 @@ public class MineralCompiler
         var op = binaryExpression.Operator;
 
         // Case 1: Lhs = CALL, Rhs = NonCall
-        if (binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        if (binaryExpression.Left.Metadata.ContainsCallOrBinary && !binaryExpression.Right.Metadata.ContainsCallOrBinary)
             return HandleOperatorFloat32(binaryExpression, Reg64.RAX, Reg64.RCX, Xmm128.XMM0, Xmm128.XMM1, true);
 
         // Case 2: Lhs = NonCall, Rhs = CALL
-        if (!binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        if (!binaryExpression.Left.Metadata.ContainsCallOrBinary && binaryExpression.Right.Metadata.ContainsCallOrBinary)
             return HandleOperatorFloat32(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false);
 
         // Case 3: Lhs = CALL, Rhs = CALL
-        if (binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        if (binaryExpression.Left.Metadata.ContainsCallOrBinary && binaryExpression.Right.Metadata.ContainsCallOrBinary)
             return HandleOperatorFloat32(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, true);
 
         // Case 3: Lhs = NonCall, Rhs = NonCall
-        if (!binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        if (!binaryExpression.Left.Metadata.ContainsCallOrBinary && !binaryExpression.Right.Metadata.ContainsCallOrBinary)
             return HandleOperatorFloat32(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false);
 
         throw new InvalidOperationException("unexpected binary case");
@@ -1172,28 +1198,28 @@ public class MineralCompiler
         var op = binaryExpression.Operator;
 
         // Case 1: Lhs = CALL, Rhs = NonCall
-        if (binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        if (binaryExpression.Left.Metadata.ContainsCallOrBinary && !binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
             HandleOperatorFloat32(binaryExpression, Reg64.RAX, Reg64.RCX, Xmm128.XMM0, Xmm128.XMM1, true, thenBlock, elseBlock);
             return;
         }
 
         // Case 2: Lhs = NonCall, Rhs = CALL
-        if (!binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        if (!binaryExpression.Left.Metadata.ContainsCallOrBinary && binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
             HandleOperatorFloat32(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false, thenBlock, elseBlock);
             return;
         }
 
         // Case 3: Lhs = CALL, Rhs = CALL
-        if (binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        if (binaryExpression.Left.Metadata.ContainsCallOrBinary && binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
             HandleOperatorFloat32(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, true, thenBlock, elseBlock);
             return;
         }
 
         // Case 3: Lhs = NonCall, Rhs = NonCall
-        if (!binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        if (!binaryExpression.Left.Metadata.ContainsCallOrBinary && !binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
             HandleOperatorFloat32(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false, thenBlock, elseBlock);
             return;
@@ -1485,19 +1511,19 @@ public class MineralCompiler
         var op = binaryExpression.Operator;
 
         // Case 1: Lhs = CALL, Rhs = NonCall
-        if (binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        if (binaryExpression.Left.Metadata.ContainsCallOrBinary && !binaryExpression.Right.Metadata.ContainsCallOrBinary)
             return HandleOperatorFloat64(binaryExpression, Reg64.RAX, Reg64.RCX, Xmm128.XMM0, Xmm128.XMM1, true);
 
         // Case 2: Lhs = NonCall, Rhs = CALL
-        if (!binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        if (!binaryExpression.Left.Metadata.ContainsCallOrBinary && binaryExpression.Right.Metadata.ContainsCallOrBinary)
             return HandleOperatorFloat64(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false);
 
         // Case 3: Lhs = CALL, Rhs = CALL
-        if (binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        if (binaryExpression.Left.Metadata.ContainsCallOrBinary && binaryExpression.Right.Metadata.ContainsCallOrBinary)
             return HandleOperatorFloat64(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, true);
 
         // Case 3: Lhs = NonCall, Rhs = NonCall
-        if (!binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        if (!binaryExpression.Left.Metadata.ContainsCallOrBinary && !binaryExpression.Right.Metadata.ContainsCallOrBinary)
             return HandleOperatorFloat64(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false);
 
         throw new InvalidOperationException("unexpected binary case");
@@ -1509,28 +1535,28 @@ public class MineralCompiler
         var op = binaryExpression.Operator;
 
         // Case 1: Lhs = CALL, Rhs = NonCall
-        if (binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        if (binaryExpression.Left.Metadata.ContainsCallOrBinary && !binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
             HandleOperatorFloat64(binaryExpression, Reg64.RAX, Reg64.RCX, Xmm128.XMM0, Xmm128.XMM1, true, thenBlock, elseBlock);
             return;
         }
 
         // Case 2: Lhs = NonCall, Rhs = CALL
-        if (!binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        if (!binaryExpression.Left.Metadata.ContainsCallOrBinary && binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
             HandleOperatorFloat64(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false, thenBlock, elseBlock);
             return;
         }
 
         // Case 3: Lhs = CALL, Rhs = CALL
-        if (binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        if (binaryExpression.Left.Metadata.ContainsCallOrBinary && binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
             HandleOperatorFloat64(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, true, thenBlock, elseBlock);
             return;
         }
 
         // Case 3: Lhs = NonCall, Rhs = NonCall
-        if (!binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        if (!binaryExpression.Left.Metadata.ContainsCallOrBinary && !binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
             HandleOperatorFloat64(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false, thenBlock, elseBlock);
             return;
@@ -1822,28 +1848,28 @@ public class MineralCompiler
         var op = binaryExpression.Operator;
 
         // Case 1: Lhs = CALL, Rhs = NonCall
-        if (binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        if (binaryExpression.Left.Metadata.ContainsCallOrBinary && !binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
             return HandleOperatorByte(binaryExpression, Reg64.RAX, Reg64.RCX, Xmm128.XMM0, Xmm128.XMM1, true);
 
         }
 
         // Case 2: Lhs = NonCall, Rhs = CALL
-        if (!binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        if (!binaryExpression.Left.Metadata.ContainsCallOrBinary && binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
             return HandleOperatorByte(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false);
 
         }
 
         // Case 3: Lhs = CALL, Rhs = CALL
-        if (binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        if (binaryExpression.Left.Metadata.ContainsCallOrBinary && binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
             return HandleOperatorByte(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, true);
 
         }
 
         // Case 3: Lhs = NonCall, Rhs = NonCall
-        if (!binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        if (!binaryExpression.Left.Metadata.ContainsCallOrBinary && !binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
             return HandleOperatorByte(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false);
 
@@ -1858,28 +1884,28 @@ public class MineralCompiler
         var op = binaryExpression.Operator;
 
         // Case 1: Lhs = CALL, Rhs = NonCall
-        if (binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        if (binaryExpression.Left.Metadata.ContainsCallOrBinary && !binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
             HandleOperatorByte(binaryExpression, Reg64.RAX, Reg64.RCX, Xmm128.XMM0, Xmm128.XMM1, true, thenBlock, elseBlock);
             return;
         }
 
         // Case 2: Lhs = NonCall, Rhs = CALL
-        if (!binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        if (!binaryExpression.Left.Metadata.ContainsCallOrBinary && binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
             HandleOperatorByte(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false, thenBlock, elseBlock);
             return;
         }
 
         // Case 3: Lhs = CALL, Rhs = CALL
-        if (binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        if (binaryExpression.Left.Metadata.ContainsCallOrBinary && binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
             HandleOperatorByte(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, true, thenBlock, elseBlock);
             return;
         }
 
         // Case 3: Lhs = NonCall, Rhs = NonCall
-        if (!binaryExpression.Left.Metadata.ContainsCall && !binaryExpression.Right.Metadata.ContainsCall)
+        if (!binaryExpression.Left.Metadata.ContainsCallOrBinary && !binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
             HandleOperatorByte(binaryExpression, Reg64.RCX, Reg64.RAX, Xmm128.XMM1, Xmm128.XMM0, false, thenBlock, elseBlock);
             return;
@@ -2323,6 +2349,12 @@ public class MineralCompiler
             case ConditionalStatement ifStatement:
                 GatherMetadata(ifStatement);
                 break;
+            case ContinueStatement continueStatement:
+                GatherMetadata(continueStatement);
+                break;
+            case BreakStatement breakStatement:
+                GatherMetadata(breakStatement);
+                break;
             default:
                 throw new InvalidOperationException($"Unknown statement type '{statement.GetType()}'");
         }
@@ -2355,6 +2387,16 @@ public class MineralCompiler
         }
         GatherMetadata(returnStatement.ValueToReturn);
         returnStatement.Metadata.StackSlotsNeeded = returnStatement.ValueToReturn.Metadata.StackSlotsNeeded;
+    }
+
+    private void GatherMetadata(ContinueStatement continueStatement)
+    {
+
+    }
+
+    private void GatherMetadata(BreakStatement breakStatement)
+    {
+
     }
 
     private void GatherMetadata(ConditionalStatement ifStatement)
@@ -2431,9 +2473,9 @@ public class MineralCompiler
         GatherMetadata(binaryExpression.Left);
         GatherMetadata(binaryExpression.Right);
         binaryExpression.Metadata.StackSlotsNeeded = Math.Max(binaryExpression.Left.Metadata.StackSlotsNeeded, binaryExpression.Right.Metadata.StackSlotsNeeded);
-        binaryExpression.Metadata.ContainsCall = binaryExpression.Left.Metadata.ContainsCall || binaryExpression.Right.Metadata.ContainsCall;
+        binaryExpression.Metadata.ContainsCallOrBinary = true; // since it IS a binary
 
-        if (binaryExpression.Left.Metadata.ContainsCall && binaryExpression.Right.Metadata.ContainsCall)
+        if (binaryExpression.Left.Metadata.ContainsCallOrBinary && binaryExpression.Right.Metadata.ContainsCallOrBinary)
         {
             binaryExpression.Metadata.StackSlotsNeeded += 1;
         }
@@ -2446,21 +2488,21 @@ public class MineralCompiler
             GatherMetadata(argument);
         }
         callExpression.Metadata.SU = 4;
-        callExpression.Metadata.ContainsCall = true;
+        callExpression.Metadata.ContainsCallOrBinary = true; // since it IS a call
         callExpression.Metadata.StackSlotsNeeded = callExpression.Arguments.Count > 0? callExpression.Arguments.Max(a => a.Metadata.StackSlotsNeeded): 0;
     }
 
     private void GatherMetadata(IdentifierExpression identifierExpression)
     {
         identifierExpression.Metadata.SU = 0;
-        identifierExpression.Metadata.ContainsCall = false;
+        identifierExpression.Metadata.ContainsCallOrBinary = false;
         identifierExpression.Metadata.StackSlotsNeeded = 0;
     }
 
     private void GatherMetadata(LiteralExpression literalExpression)
     {
         literalExpression.Metadata.SU = 1;
-        literalExpression.Metadata.ContainsCall = false;
+        literalExpression.Metadata.ContainsCallOrBinary = false;
         literalExpression.Metadata.StackSlotsNeeded = 0;
     }
 
@@ -2469,7 +2511,7 @@ public class MineralCompiler
         GatherMetadata(memberAccessExpression.Instance);
 
         memberAccessExpression.Metadata.SU = memberAccessExpression.Instance.Metadata.SU;
-        memberAccessExpression.Metadata.ContainsCall = memberAccessExpression.Instance.Metadata.ContainsCall;
+        memberAccessExpression.Metadata.ContainsCallOrBinary = memberAccessExpression.Instance.Metadata.ContainsCallOrBinary;
         memberAccessExpression.Metadata.StackSlotsNeeded = memberAccessExpression.Instance.Metadata.StackSlotsNeeded;
     }
 
@@ -2479,13 +2521,13 @@ public class MineralCompiler
         {
             GatherMetadata(referenceExpression.Instance);
             referenceExpression.Metadata.SU = referenceExpression.Instance.Metadata.SU;
-            referenceExpression.Metadata.ContainsCall = referenceExpression.Instance.Metadata.ContainsCall;
+            referenceExpression.Metadata.ContainsCallOrBinary = referenceExpression.Instance.Metadata.ContainsCallOrBinary;
             referenceExpression.Metadata.StackSlotsNeeded = referenceExpression.Instance.Metadata.StackSlotsNeeded;
         }
         else
         {
             referenceExpression.Metadata.SU = 1;
-            referenceExpression.Metadata.ContainsCall = false;
+            referenceExpression.Metadata.ContainsCallOrBinary = false;
             referenceExpression.Metadata.StackSlotsNeeded = 0;
         }
     }
@@ -2493,7 +2535,7 @@ public class MineralCompiler
     private void GatherMetadata(DereferenceExpression dereferenceExpression)
     {
         GatherMetadata(dereferenceExpression.Target);
-        dereferenceExpression.Metadata.ContainsCall = dereferenceExpression.Target.Metadata.ContainsCall;
+        dereferenceExpression.Metadata.ContainsCallOrBinary = dereferenceExpression.Target.Metadata.ContainsCallOrBinary;
         dereferenceExpression.Metadata.StackSlotsNeeded = dereferenceExpression.Target.Metadata.StackSlotsNeeded;
     }
 
@@ -2506,7 +2548,7 @@ public class MineralCompiler
     private void GatherMetadata(CastExpression castExpression)
     {
         GatherMetadata(castExpression.Value);
-        castExpression.Metadata.ContainsCall = castExpression.Value.Metadata.ContainsCall;
+        castExpression.Metadata.ContainsCallOrBinary = castExpression.Value.Metadata.ContainsCallOrBinary;
         castExpression.Metadata.StackSlotsNeeded = castExpression.Value.Metadata.StackSlotsNeeded;
     }
 

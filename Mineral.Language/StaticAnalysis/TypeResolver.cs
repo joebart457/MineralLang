@@ -319,7 +319,7 @@ public class TypeResolver
         }
         foreach (var statement in functionDeclaration.BodyStatements)
         {
-            Resolve(errors, module, functionContext, statement);
+            Resolve(errors, module, functionContext, null, statement);
             functionContext.BodyStatements.Add(statement);
         }
         if (!functionContext.EncounteredReturnStatement && !functionContext.ReturnType.IsEqualTo(NativeTypes.Void)) 
@@ -328,7 +328,7 @@ public class TypeResolver
         }
     }
 
-    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, StatementBase statement)
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, WhileStatement? parentLoop, StatementBase statement)
     {
         switch (statement)
         {
@@ -349,6 +349,12 @@ public class TypeResolver
                 break;
             case DereferenceAssignmentStatement dereferenceAssignmentStatement:
                 Resolve(errors, module, context, dereferenceAssignmentStatement);
+                break;
+            case BreakStatement breakStatement:
+                Resolve(errors, module, context, parentLoop, breakStatement);
+                break;
+            case ContinueStatement continueStatement:
+                Resolve(errors, module, context, parentLoop, continueStatement);
                 break;
             default:
                 errors.Add(statement, $"Unknown statement type '{statement.GetType()}'");
@@ -382,8 +388,8 @@ public class TypeResolver
 
         ConcreteType conditionType = conditionalStatement.ConditionalTarget.ConcreteType;
 
-        foreach (var statement in conditionalStatement.ThenBlock) Resolve(errors, module, context, statement); // TODO Branched return detection
-        foreach (var statement in conditionalStatement.ElseBlock) Resolve(errors, module, context, statement); 
+        foreach (var statement in conditionalStatement.ThenBlock) Resolve(errors, module, context, null, statement); // TODO Branched return detection
+        foreach (var statement in conditionalStatement.ElseBlock) Resolve(errors, module, context, null, statement); 
         if (!conditionType.IsConditionalTestable())
         {
             errors.Add(conditionalStatement.ConditionalTarget, $"Cannot use type '{conditionType}' as a conditional test");
@@ -396,7 +402,7 @@ public class TypeResolver
 
         ConcreteType conditionType = whileStatement.ConditionalTarget.ConcreteType;
 
-        foreach (var statement in whileStatement.ThenBlock) Resolve(errors, module, context, statement); // TODO Branched return detection
+        foreach (var statement in whileStatement.ThenBlock) Resolve(errors, module, context, whileStatement, statement); // TODO Branched return detection
         if (!conditionType.IsConditionalTestable())
         {
             errors.Add(whileStatement.ConditionalTarget, $"Cannot use type '{conditionType}' as a conditional test in loop");
@@ -566,6 +572,18 @@ public class TypeResolver
                 errors.Add(errorTarget, $"Error target must be of error type, but got '{errorTarget.ConcreteType}'");
             }
         }
+    }
+
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, WhileStatement? parentLoop, BreakStatement breakStatement)
+    {
+        if (parentLoop == null) errors.Add(breakStatement, $"'break' must occur inside loop body");
+        else breakStatement.ParentLoop = parentLoop;
+    }
+
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, WhileStatement? parentLoop, ContinueStatement continueStatement)
+    {
+        if (parentLoop == null) errors.Add(continueStatement, $"'continue' must occur inside loop body");
+        else continueStatement.ParentLoop = parentLoop;
     }
 
     private ConcreteType ResolveOrCreateVariable(ModuleErrors errors, FunctionContext context, Token variableName, ConcreteType attemptedAssignmentType)

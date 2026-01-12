@@ -1,7 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-
+﻿
 namespace Mineral.Language.Expressions;
 
 public enum OperatorType
@@ -24,7 +21,7 @@ public enum OperatorType
     BitwiseXor,
 }
 
-public class BinaryExpression : ConditionalExpression // BinaryExpression is not an operable expression (as a language choice)
+public class BinaryExpression : OperableExpresson 
 {
     public OperableExpresson Left { get; set; }
     public OperableExpresson Right { get; set; }

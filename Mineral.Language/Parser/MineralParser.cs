@@ -189,9 +189,11 @@ public class MineralParser: TokenParser
         StatementBase statement;
         var start = Current().Start;
         if (AdvanceIfMatch(TokenTypes.Error)) statement = ParseError();
+        else if (AdvanceIfMatch(TokenTypes.Break)) statement = new BreakStatement();
+        else if (AdvanceIfMatch(TokenTypes.Continue)) statement = new ContinueStatement();
         else if (AdvanceIfMatch(TokenTypes.Return)) statement = ParseReturn();
         else if (AdvanceIfMatch(TokenTypes.While)) statement = ParseWhile();
-        else  statement = ParseAssignmentOrConditional();
+        else statement = ParseAssignmentOrConditional();
         statement.Start = start;
         statement.End = Previous().End;
         return statement;
@@ -307,9 +309,9 @@ public class MineralParser: TokenParser
         return CaptureExpression();
     }
 
-    private ExpressionBase CaptureExpression()
+    private OperableExpresson CaptureExpression()
     {
-        return Capture<ExpressionBase>(() =>
+        return Capture<OperableExpresson>(() =>
         {
             
             if (AdvanceIfMatch(TokenTypes.ReferenceType))
@@ -328,9 +330,9 @@ public class MineralParser: TokenParser
         
     }
 
-    private ConditionalExpression CaptureConditionalExpression()
+    private OperableExpresson CaptureConditionalExpression()
     {
-        return Capture<ConditionalExpression>(() =>
+        return Capture<OperableExpresson>(() =>
         {
             var lhs = Capture(() => ParseGetOrCallExpression());
             if (AdvanceIfMatchOperator(out var op))
@@ -415,6 +417,13 @@ public class MineralParser: TokenParser
 
     private OperableExpresson ParseLiteralExpression()
     {
+        if (AdvanceIfMatch(TokenTypes.LParen))
+        {
+            // Parse grouped operation
+            var expression = CaptureExpression();
+            Consume(TokenTypes.RParen, "expect enclosing ')' in grouping");
+            return expression;
+        }
         var isNegative = AdvanceIfMatch(TokenTypes.Subtraction)? -1: 1;
         if (AdvanceIfMatch(TokenTypes.Integer))
         {
@@ -506,7 +515,6 @@ public class MineralParser: TokenParser
         }
         var typeName = Consume(TokenTypes.Word, "expect type symbol");
         return new TypeSymbol(module, typeName, new(), false);
-
     }
 
     private bool Seek(string tokenTypeToSeekPast)
