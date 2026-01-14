@@ -445,10 +445,6 @@ public class MineralParser: TokenParser
         {
             return new LiteralExpression(Previous().Lexeme);
         }
-        if (AdvanceIfMatch(TokenTypes.WString))
-        {
-            return new LiteralExpression(new WString(Previous().Lexeme));
-        }
         if (AdvanceIfMatch(TokenTypes.Null))
         {
             return new LiteralExpression(null);
@@ -459,11 +455,16 @@ public class MineralParser: TokenParser
             if (chr.Length == 1) return new LiteralExpression(chr[0]); 
             throw new ParsingException(Previous(), $"unable to parse value '{Previous().Lexeme}' to byte");      
         }
-        if (AdvanceIfMatch(TokenTypes.WChar))
+        if (AdvanceIfMatch(TokenTypes.Wide))
         {
-            var chr = Encoding.Unicode.GetBytes(Previous().Lexeme);
-            if (chr.Length == 2) return new LiteralExpression(BitConverter.ToInt16(chr));
-            throw new ParsingException(Previous(), $"unable to parse value '{Previous().Lexeme}' to int16");
+            if (AdvanceIfMatch(TokenTypes.String)) return new LiteralExpression(new WString(Previous().Lexeme));
+            else if (AdvanceIfMatch(TokenTypes.Char))
+            {
+                var chr = Encoding.Unicode.GetBytes(Previous().Lexeme);
+                if (chr.Length == 2) return new LiteralExpression(BitConverter.ToInt16(chr));
+                throw new ParsingException(Previous(), $"unable to parse value '{Previous().Lexeme}' to int16");
+            }
+            else return new IdentifierExpression(Previous()); // identifier w
         }
         if (AdvanceIfMatch(TokenTypes.Hex))
         {

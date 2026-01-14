@@ -16,7 +16,7 @@ pub func main() int {
 	//x.message = "Hello There!";
 	//_ = io.log(x.message, 12);
 	len = 7;
-	_ = test_deref(ref len);
+	_ = test_derefw(ref len);
 
 	return 0; 
 }
@@ -28,8 +28,20 @@ func test_deref(ref[int] pLen) void {
 	_ = log_indirect(ref msg, pLen);
 }
 
+func test_derefw(ref[int] pLen) void {
+	msg = w"Dereference works!";
+
+	_ = log_indirect(ref msg, pLen);
+}
+
+
 func log_indirect(ref[string] msg, ref[int] length) void {
 	msg := "no more";
 	_ = io.log(deref msg, deref length);
+}
+
+func log_indirect(ref[wstring] msg, ref[int] length) void {
+	msg := w"no more WIDER";
+	_ = io.log(deref msg, (deref msg).length);
 }
 

@@ -6,6 +6,7 @@ func `kernel32.dll` GetLastError() int;
 func `kernel32.dll` GetStdHandle(int hndl) ref[void];
 
 func `kernel32.dll` WriteConsoleA(ref[void] hOut, cstring msg, int lenMsg, int charsWritten, int res) int;
+func `kernel32.dll` WriteConsoleW(ref[void] hOut, wcstring msg, int lenMsg, int charsWritten, int res) int;
 
 import {
 	"str"
@@ -19,5 +20,14 @@ pub func log(string msg, int len) void {
 	written = str.strcmp("test", "test");
 	_ = WriteConsoleA(hOut, msg.cstr, len, 0, 0);
 	_ = ExitProcess(written);
+}
+
+pub func log(wstring msg, int len) void {
+	
+ 	hOut = GetStdHandle(-11);
+
+	//written = str.strcmp("test", "test");
+	_ = WriteConsoleW(hOut, msg.wcstr, len, 0, 0);
+	_ = ExitProcess(9);
 }
 

@@ -23,6 +23,7 @@ public class TypeResolver
         { new(TokenTypes.Word, "string", Location.Zero, Location.Zero ), NativeTypes.String },
         { new(TokenTypes.Word, "wstring", Location.Zero, Location.Zero ), NativeTypes.WString },
         { new(TokenTypes.Word, "cstring", Location.Zero, Location.Zero ), NativeTypes.CString },
+        { new(TokenTypes.Word, "wcstring", Location.Zero, Location.Zero ), NativeTypes.WCString },
         { new(TokenTypes.Word, "void", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.Void) },
 
     };
@@ -1162,6 +1163,11 @@ public class FunctionContext
     }
 
     public CompilerMetadata Metadata { get; private set; } = new();
+
+    public override string ToString()
+    {
+        return this.GetFunctionSignature();
+    }
 }
 
 
