@@ -219,13 +219,40 @@ internal class X86Optimizer
         {
             WipeIfNeeded(regDest.Dest);
         }
+        else if (ins is RM32_Dest rmDest32)
+        {
+            // remove stale equivalencies
+            WipeIfNeeded(rmDest32.Dest);
+        }
+        else if (ins is Reg32_Dest regDest32)
+        {
+            WipeIfNeeded(regDest32.Dest.ToReg64());
+        }
+        else if (ins is RM16_Dest rmDest16)
+        {
+            // remove stale equivalencies
+            WipeIfNeeded(rmDest16.Dest);
+        }
+        else if (ins is Reg16_Dest regDest16)
+        {
+            WipeIfNeeded(regDest16.Dest.ToReg64());
+        }
+        else if (ins is RM8_Dest rmDest8)
+        {
+            // remove stale equivalencies
+            WipeIfNeeded(rmDest8.Dest);
+        }
+        else if (ins is Reg8_Dest regDest8)
+        {
+            WipeIfNeeded(regDest8.Dest.ToReg64());
+        }
         else if (ins is Call_Int32 || ins is Call_Rel32 || ins is Call_RM32 || ins is Call_RM64) _equivalencies.Clear();
         else if (ins is Ret || ins is Ret_UInt16) _equivalencies.Clear();
         else if (ins is Label) _equivalencies.Clear();
         return ins;
     }
 
-    private void WipeIfNeeded(RM64 rm)
+    private void WipeIfNeeded(RM rm)
     {
         if (rm is Reg64 reg)
         {
@@ -233,12 +260,11 @@ internal class X86Optimizer
             foundKeys.AddRange(_equivalencies.Keys.Where(x => _equivalencies[x].Equals(reg)));
             foreach (var key in foundKeys) _equivalencies.Remove(key);
         }
-        else 
+        else if (rm is MemRegDisp memRegDisp)
         {
-            var foundKeys = _equivalencies.Keys.Where(x => _equivalencies[x].Equals(rm));
+            var foundKeys = _equivalencies.Keys.Where(x => _equivalencies[x].Equals(memRegDisp));
             foreach (var key in foundKeys) _equivalencies.Remove(key);
-        }
-        
+        }  
     }
 
 

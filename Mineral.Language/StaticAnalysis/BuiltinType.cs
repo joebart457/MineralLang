@@ -7,6 +7,8 @@ namespace Mineral.Language.StaticAnalysis;
 public enum BuiltinType
 {
     Byte,
+    Int16,
+    Int32,
     Int,
     Float32,
     Float64,
@@ -23,6 +25,8 @@ public static class NativeTypes
 
 
     public static readonly ConcreteType Int = new ConcreteType(BuiltinType.Int);
+    public static readonly ConcreteType Int16 = new ConcreteType(BuiltinType.Int16);
+    public static readonly ConcreteType Int32 = new ConcreteType(BuiltinType.Int32);
     public static readonly ConcreteType String = new ReferenceType(
         new StructType(new Token(TokenTypes.Word, "BoxedString", Location.Zero, Location.Zero),
         [

@@ -4,6 +4,7 @@ using Mineral.Language.LValues;
 using Mineral.Language.Statements;
 using Mineral.Language.StaticAnalysis;
 using System.Globalization;
+using System.Text;
 using Tokenizer.Core;
 using Tokenizer.Core.Constants;
 using Tokenizer.Core.Exceptions;
@@ -452,11 +453,26 @@ public class MineralParser: TokenParser
         {
             return new LiteralExpression(null);
         }
+        if (AdvanceIfMatch(TokenTypes.Char))
+        {
+            var chr = Encoding.UTF8.GetBytes(Previous().Lexeme);
+            if (chr.Length == 1) return new LiteralExpression(chr[0]); 
+            throw new ParsingException(Previous(), $"unable to parse value '{Previous().Lexeme}' to byte");      
+        }
+        if (AdvanceIfMatch(TokenTypes.WChar))
+        {
+            var chr = Encoding.Unicode.GetBytes(Previous().Lexeme);
+            if (chr.Length == 2) return new LiteralExpression(BitConverter.ToInt16(chr));
+            throw new ParsingException(Previous(), $"unable to parse value '{Previous().Lexeme}' to int16");
+        }
         if (AdvanceIfMatch(TokenTypes.Hex))
         {
             Consume(TokenTypes.Integer, "expect integer hex value");
-            if (Previous().Lexeme.Length <= 2 && byte.TryParse(Previous().Lexeme, NumberStyles.HexNumber, null, out var b)) return new LiteralExpression((byte)(b * isNegative));
-            throw new ParsingException(Previous(), $"unable to parse value '{Previous().Lexeme}' to byte");
+            if (Previous().Lexeme.Length == 2 && byte.TryParse(Previous().Lexeme, NumberStyles.HexNumber, null, out var b)) return new LiteralExpression((byte)(b * isNegative));
+            else if (Previous().Lexeme.Length == 4 && short.TryParse(Previous().Lexeme, NumberStyles.HexNumber, null, out var s)) return new LiteralExpression((short)(s * isNegative));
+            else if (Previous().Lexeme.Length == 8 && int.TryParse(Previous().Lexeme, NumberStyles.HexNumber, null, out var i)) return new LiteralExpression(i * isNegative);
+            else if (Previous().Lexeme.Length == 16 && long.TryParse(Previous().Lexeme, NumberStyles.HexNumber, null, out var l)) return new LiteralExpression(l * isNegative);
+            throw new ParsingException(Previous(), $"unable to parse hex value '{Previous().Lexeme}'");
         }
         var token = Current();
         throw new ParsingException(token, $"unexpected token {token}");

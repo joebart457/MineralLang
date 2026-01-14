@@ -104,14 +104,29 @@ internal static class TypeExtensions
     public static bool IsCastableTo(this ConcreteType from, ConcreteType targetType)
     {
         // essentially a reinterpret_cast except for numeric types
-        if (from.IsNumericType() && targetType.IsNumericType()) return true;
+
+        if (from.IsEqualTo(NativeTypes.Int) && targetType.IsEqualTo(NativeTypes.Int32)) return true;
+        if (from.IsEqualTo(NativeTypes.Int) && targetType.IsEqualTo(NativeTypes.Int16)) return true;
+        if (from.IsEqualTo(NativeTypes.Int) && targetType.IsEqualTo(NativeTypes.Byte)) return true;
+        if (from.IsEqualTo(NativeTypes.Int16) && targetType.IsEqualTo(NativeTypes.Int)) return true;
+        if (from.IsEqualTo(NativeTypes.Int16) && targetType.IsEqualTo(NativeTypes.Int32)) return true;
+        if (from.IsEqualTo(NativeTypes.Int16) && targetType.IsEqualTo(NativeTypes.Byte)) return true;
+        if (from.IsEqualTo(NativeTypes.Byte) && targetType.IsEqualTo(NativeTypes.Int)) return true;
+        if (from.IsEqualTo(NativeTypes.Byte) && targetType.IsEqualTo(NativeTypes.Int16)) return true;
+        if (from.IsEqualTo(NativeTypes.Byte) && targetType.IsEqualTo(NativeTypes.Int32)) return true;
+
+        if (from.IsEqualTo(NativeTypes.Float64) && targetType.IsEqualTo(NativeTypes.Int)) return true;
+        if (from.IsEqualTo(NativeTypes.Float64) && targetType.IsEqualTo(NativeTypes.Float32)) return true;
+
+        if (from.IsEqualTo(NativeTypes.Float32) && targetType.IsEqualTo(NativeTypes.Int32)) return true;
+        if (from.IsEqualTo(NativeTypes.Float32) && targetType.IsEqualTo(NativeTypes.Float64)) return true;
         return from.GetActualSize() == targetType.GetActualSize();
     }
 
     public static bool IsConditionalTestable(this ConcreteType type)
     {
         if (type is ReferenceType) return true;
-        if (type.IsEqualTo(NativeTypes.Int) || type.IsEqualTo(NativeTypes.String) || type.IsEqualTo(NativeTypes.WString)) return true;
+        if (type.IsEqualTo(NativeTypes.Int) || type.IsEqualTo(NativeTypes.Int32) || type.IsEqualTo(NativeTypes.Int16)) return true;
         return false;
     }
 
@@ -193,7 +208,7 @@ internal static class TypeExtensions
             case OperatorType.NotEqual:
             {
                 resultType = NativeTypes.Int;
-                return left.IsAssignableFrom(right) && (left.IsConditionalTestable() || left.IsEqualTo(NativeTypes.Float32) || left.IsEqualTo(NativeTypes.Float64) || left.IsEqualTo(NativeTypes.Byte));
+                return left.IsAssignableFrom(right) && (left.IsConditionalTestable() || left.IsEqualTo(NativeTypes.Float32) || left.IsEqualTo(NativeTypes.Float64) || left.IsEqualTo(NativeTypes.Byte) || left.IsEqualTo(NativeTypes.Int16) || left.IsEqualTo(NativeTypes.Int32));
             }
             case OperatorType.GreaterThan:
             case OperatorType.LessThan:

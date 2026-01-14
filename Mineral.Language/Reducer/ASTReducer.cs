@@ -153,11 +153,11 @@ internal static class ASTReducer
                 return new LiteralExpression((double)int2);
             }
 
-            if (castExpression.IsIntegerType() && literalExpression.Value is float flt2)
+            if (castExpression.IsInt64() && literalExpression.Value is float flt2)
             {
                 return new LiteralExpression((int)flt2);
             }
-            if (castExpression.IsIntegerType() && literalExpression.Value is double dbl2)
+            if (castExpression.IsInt64() && literalExpression.Value is double dbl2)
             {
                 return new LiteralExpression((int)dbl2);
             }

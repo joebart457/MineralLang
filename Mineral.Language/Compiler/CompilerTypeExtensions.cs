@@ -30,6 +30,8 @@ public static class CompilerTypeExtensions
         if (concreteType.IsBuiltin) return (concreteType.BuiltinType) switch
         {
             BuiltinType.Float32 => 4,
+            BuiltinType.Int32 => 4,
+            BuiltinType.Int16 => 2,
             BuiltinType.Byte => 1,
             _ => 8,
         };
@@ -83,7 +85,7 @@ public static class CompilerTypeExtensions
     }
 
 
-    public static bool IsIntegerType(this ExpressionBase expression)
+    public static bool IsInt64(this ExpressionBase expression)
     {
         return expression.ConcreteType.IsEqualTo(NativeTypes.Int);
     }
@@ -91,6 +93,16 @@ public static class CompilerTypeExtensions
     public static bool IsByteType(this ExpressionBase expression)
     {
         return expression.ConcreteType.IsEqualTo(NativeTypes.Byte);
+    }
+
+    public static bool IsInt16(this ExpressionBase expression)
+    {
+        return expression.ConcreteType.IsEqualTo(NativeTypes.Int16);
+    }
+
+    public static bool IsInt32(this ExpressionBase expression)
+    {
+        return expression.ConcreteType.IsEqualTo(NativeTypes.Int32);
     }
 
     public static bool IsReferenceType(this ExpressionBase expression)

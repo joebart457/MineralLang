@@ -15,6 +15,8 @@ public class TypeResolver
     private static readonly Dictionary<Token, ConcreteType> BuiltinTypes = new Dictionary<Token, ConcreteType>(new TokenEqualityComparer())
     {
         { new(TokenTypes.Word, "byte", Location.Zero, Location.Zero ), NativeTypes.Byte },
+        { new(TokenTypes.Word, "int16", Location.Zero, Location.Zero ), NativeTypes.Int16 },
+        { new(TokenTypes.Word, "int32", Location.Zero, Location.Zero ), NativeTypes.Int32 },
         { new(TokenTypes.Word, "int", Location.Zero, Location.Zero ), NativeTypes.Int },
         { new(TokenTypes.Word, "float32", Location.Zero, Location.Zero ), NativeTypes.Float32 },
         { new(TokenTypes.Word, "float64", Location.Zero, Location.Zero ), NativeTypes.Float64 },
@@ -796,6 +798,10 @@ public class TypeResolver
     {
         if (literalExpression.Value is int)
             literalExpression.TagAsType(NativeTypes.Int);
+        else if (literalExpression.Value is long)
+            literalExpression.TagAsType(NativeTypes.Int);
+        else if (literalExpression.Value is short)
+            literalExpression.TagAsType(NativeTypes.Int16);
         else if (literalExpression.Value is float)
             literalExpression.TagAsType(NativeTypes.Float32);
         else if (literalExpression.Value is double)

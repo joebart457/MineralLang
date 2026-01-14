@@ -16,6 +16,18 @@ internal static class X86AssemblyContextExtensions
             asm.Mov(regDest, (RM8)regSrc);
     }
 
+    public static void MovIfNeeded(this X86AssemblyContext asm, Reg16 regDest, Reg16 regSrc)
+    {
+        if (regDest != regSrc)
+            asm.Mov(regDest, (RM16)regSrc);
+    }
+
+    public static void MovIfNeeded(this X86AssemblyContext asm, Reg32 regDest, Reg32 regSrc)
+    {
+        if (regDest != regSrc)
+            asm.Mov(regDest, (RM32)regSrc);
+    }
+
     public static void MovIfNeeded(this X86AssemblyContext asm, Xmm128 regDest, Xmm128 regSrc)
     {
         if (regDest != regSrc)
