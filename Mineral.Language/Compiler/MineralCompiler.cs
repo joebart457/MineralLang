@@ -1,6 +1,8 @@
 ﻿
 using Mineral.Language.Expressions;
 using Mineral.Language.LValues;
+using Mineral.Language.Optimizer;
+using Mineral.Language.Parser;
 using Mineral.Language.Statements;
 using Mineral.Language.StaticAnalysis;
 using System.Runtime.InteropServices;
@@ -24,6 +26,9 @@ public class MineralCompiler
             {
                 CompileModule(module);
             }
+
+            var optimizer = new X86Optimizer();
+            optimizer.Optimize(_asm);
 
             var error = _asm.OutputX86Assembly64Bit(outputTarget, entryPoint, Path.GetFileName(outputPath), out var peFile);
             var bytes = peFile.AssembleProgram(entryPoint);
@@ -484,10 +489,18 @@ public class MineralCompiler
         else if (literalExpression.Value is string str)
         {
             var mem = _asm.AddString(str);
-            _asm.Lea(desiredReg, mem);
+            var boxedMem = _asm.AddOtherData(new BoxedString(str.Length, mem.Symbol));
+            _asm.Lea(desiredReg, boxedMem);
             //_asm.Mov(desiredReg, Imm64.Create(mem.Symbol)); // absolute addressing
             return new RMOrImmediate(desiredReg);
-
+        }
+        else if (literalExpression.Value is WString wstr)
+        {
+            var mem = _asm.AddUTF16String(wstr.Value);
+            var boxedMem = _asm.AddOtherData(new BoxedString(wstr.Value.Length, mem.Symbol));
+            _asm.Lea(desiredReg, boxedMem);
+            //_asm.Mov(desiredReg, Imm64.Create(mem.Symbol)); // absolute addressing
+            return new RMOrImmediate(desiredReg);
         }
         else if (literalExpression.Value is byte b)
             return new RMOrImmediate(new Imm8(b));
@@ -2882,4 +2895,24 @@ internal class RMOrImmediate
     private Immediate? _imm;
     private RM? _rm;
 
+}
+
+public class BoxedString : IInstructionData
+{
+    public BoxedString(int stringLength, string stringLabel)
+    {
+        StringLength = stringLength;
+        StringLabel = stringLabel;
+    }
+
+    public string Label { get; set; } = "";
+    
+    public int StringLength { get; set; }
+    public string StringLabel { get; set; }
+
+
+    public X86Instruction[] Emit()
+    {
+        return [new DefineQuadWord(StringLength), new DefineQuadWord_Address(Rel32.Create(StringLabel))];
+    }
 }

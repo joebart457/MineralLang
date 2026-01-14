@@ -100,7 +100,7 @@ public static class CompilerTypeExtensions
 
     public static bool IsStringType(this ExpressionBase expression)
     {
-        return expression.ConcreteType.IsEqualTo(NativeTypes.String);
+        return expression.ConcreteType.IsEqualTo(NativeTypes.String) || expression.ConcreteType.IsEqualTo(NativeTypes.WString);
     }
     public static bool IsFloat32(this ExpressionBase expression)
     {

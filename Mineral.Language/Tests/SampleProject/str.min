@@ -8,8 +8,8 @@ module str
 
 
 pub func strcmp(string aStr, string bStr) int {
-	a =  ^ref[byte] aStr;
-	b =  ^ref[byte] bStr;
+	a =  aStr.cstr;
+	b =  bStr.cstr;
 	notDone = 1;
 	while notDone {
 		deref a != deref b? return 8;

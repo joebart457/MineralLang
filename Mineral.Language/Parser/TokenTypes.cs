@@ -71,6 +71,7 @@ public static class TokenTypes
 
     // Enclosed
     public const string ImportPath = "ImportPath";
+    public const string WString = "WString";
 }
 
 
@@ -134,6 +135,8 @@ public static class TokenizerFactory
             new(TokenTypes.EoLComment, "//"),
 
             new(TokenTypes.String, "\"", enclosingLeft: "\"", enclosingRight: "\""),
+            new(TokenTypes.WString, "W\"", enclosingLeft: "\"", enclosingRight: "\""),
+            new(TokenTypes.WString, "w\"", enclosingLeft: "\"", enclosingRight: "\""),
             new(TokenTypes.ImportPath, "`", enclosingLeft: "`", enclosingRight: "`"),
             new(TokenTypes.MultiLineComment, "/*", enclosingLeft: "/*", enclosingRight: "*/"),
         };

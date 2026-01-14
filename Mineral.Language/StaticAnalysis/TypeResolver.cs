@@ -18,7 +18,9 @@ public class TypeResolver
         { new(TokenTypes.Word, "int", Location.Zero, Location.Zero ), NativeTypes.Int },
         { new(TokenTypes.Word, "float32", Location.Zero, Location.Zero ), NativeTypes.Float32 },
         { new(TokenTypes.Word, "float64", Location.Zero, Location.Zero ), NativeTypes.Float64 },
-        { new(TokenTypes.Word, "string", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.String) },
+        { new(TokenTypes.Word, "string", Location.Zero, Location.Zero ), NativeTypes.String },
+        { new(TokenTypes.Word, "wstring", Location.Zero, Location.Zero ), NativeTypes.WString },
+        { new(TokenTypes.Word, "cstring", Location.Zero, Location.Zero ), NativeTypes.CString },
         { new(TokenTypes.Word, "void", Location.Zero, Location.Zero ), new ConcreteType(BuiltinType.Void) },
 
     };
@@ -786,11 +788,6 @@ public class TypeResolver
         }
         Resolve(errors, module, context, memberAccessExpression.Instance);
         var instanceType = memberAccessExpression.Instance.ConcreteType;
-        if (instanceType is not StructType structType)
-        {
-            errors.Add(memberAccessExpression.MemberToAccess, $"Cannot access member '{memberAccessExpression.MemberToAccess.Lexeme}' of non-struct type '{instanceType}'");
-            return;
-        }
         if (instanceType.TryFindMember(errors, memberAccessExpression.MemberToAccess, out var member) && member != null)
             memberAccessExpression.TagAsType(member.FieldType);
     }
@@ -798,13 +795,15 @@ public class TypeResolver
     public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, LiteralExpression literalExpression)
     {
         if (literalExpression.Value is int)
-            literalExpression.TagAsType(new ConcreteType(BuiltinType.Int));
+            literalExpression.TagAsType(NativeTypes.Int);
         else if (literalExpression.Value is float)
-            literalExpression.TagAsType(new ConcreteType(BuiltinType.Float32));
+            literalExpression.TagAsType(NativeTypes.Float32);
         else if (literalExpression.Value is double)
-            literalExpression.TagAsType(new ConcreteType(BuiltinType.Float64));
+            literalExpression.TagAsType(NativeTypes.Float64);
         else if (literalExpression.Value is string)
-            literalExpression.TagAsType(new ConcreteType(BuiltinType.String));
+            literalExpression.TagAsType(NativeTypes.String);
+        else if (literalExpression.Value is WString)
+            literalExpression.TagAsType(NativeTypes.WString);
         else if (literalExpression.Value is null)
             literalExpression.TagAsType(new NullPointerType());
         else if (literalExpression.Value is byte)

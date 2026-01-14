@@ -444,6 +444,10 @@ public class MineralParser: TokenParser
         {
             return new LiteralExpression(Previous().Lexeme);
         }
+        if (AdvanceIfMatch(TokenTypes.WString))
+        {
+            return new LiteralExpression(new WString(Previous().Lexeme));
+        }
         if (AdvanceIfMatch(TokenTypes.Null))
         {
             return new LiteralExpression(null);
@@ -560,5 +564,14 @@ public class UnrecoverableTokenException: System.Exception
 
     public ParsingException OrignatingException { get; set; }
 
+
+}
+public class WString
+{
+    public WString(string value)
+    {
+        Value = value;
+    }
+    public string Value { get; set; }
 
 }

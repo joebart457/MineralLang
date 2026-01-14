@@ -1,6 +1,7 @@
 ﻿
 using Mineral.Language.Compiler;
 using Mineral.Language.Expressions;
+using System;
 using Tokenizer.Core.Models;
 
 namespace Mineral.Language.StaticAnalysis;
@@ -110,14 +111,13 @@ internal static class TypeExtensions
     public static bool IsConditionalTestable(this ConcreteType type)
     {
         if (type is ReferenceType) return true;
-        if (type.GetType() == typeof(ConcreteType) 
-            && (type.BuiltinType == BuiltinType.Int || type.BuiltinType == BuiltinType.String)) return true;
+        if (type.IsEqualTo(NativeTypes.Int) || type.IsEqualTo(NativeTypes.String) || type.IsEqualTo(NativeTypes.WString)) return true;
         return false;
     }
 
     public static bool IsErrorType(this ConcreteType type)
     {
-        return type.GetType() == typeof(ConcreteType) && type.BuiltinType == BuiltinType.String;
+        return type.IsEqualTo(NativeTypes.Error);
     }
 
     public static bool IsVoidType(this ConcreteType type)
