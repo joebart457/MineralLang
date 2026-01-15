@@ -571,7 +571,7 @@ public class MineralCompiler
             case BinaryExpression binaryExpression:
                 return Compile(binaryExpression);
             case IdentifierExpression identifierExpression:
-                return Compile(identifierExpression);
+                return Compile(identifierExpression, desiredReg, desiredXmm);
             case MemberAccessExpression memberAccessExpression:
                 return Compile(memberAccessExpression, desiredReg, desiredXmm);
             case ReferenceExpression referenceExpression:
@@ -584,10 +584,18 @@ public class MineralCompiler
                 throw new InvalidOperationException($"Unknown expression type '{expression.GetType()}'");
         }
     }
-    private Mem Compile(IdentifierExpression identifierExpression)
+    private RM Compile(IdentifierExpression identifierExpression, Reg64 desiredReg, Xmm128 desiredXmm)
     {
         if (identifierExpression.FunctionContext != null)
-            return Mem64.Create(identifierExpression.FunctionContext.GetDecoratedFunctionLabel());
+        {
+            if (identifierExpression.FunctionContext.IsImported)
+            {
+                return Mem64.Create(identifierExpression.FunctionContext.GetDecoratedFunctionLabel());
+            }
+            _asm.Lea(desiredReg, Mem64.Create(identifierExpression.FunctionContext.GetDecoratedFunctionLabel()));
+            return desiredReg;
+        }
+
         return _asm.GetIdentifierOffset(identifierExpression.Symbol.Lexeme, out _);
     }
 

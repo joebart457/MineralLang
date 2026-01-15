@@ -349,7 +349,7 @@ public class MineralParser: TokenParser
     private CastExpression ParseCastExpression()
     {
         var targetType = ParseTypeSymbol();
-        var value = CaptureExpression();
+        var value = Capture(() => ParseGetOrCallExpression()); // to force user to wrap binary operations occuring on right side of cast
         return new CastExpression(targetType, value);
     }
 
