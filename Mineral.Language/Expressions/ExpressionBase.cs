@@ -1,4 +1,5 @@
-﻿using Mineral.Language.StaticAnalysis;
+﻿using Mineral.Language.Parser;
+using Mineral.Language.StaticAnalysis;
 using Tokenizer.Core.Models;
 
 namespace Mineral.Language.Expressions;
@@ -18,6 +19,7 @@ public class ExpressionBase
 
     public Location Start { get; set; } = Location.Zero;
     public Location End { get; set; } = Location.Zero;
+    public static MissingExpression Missing => new MissingExpression();
 }
 
 public class CompilerMetadata

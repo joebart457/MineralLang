@@ -11,6 +11,26 @@ using Tokenizer.Core.Exceptions;
 using Tokenizer.Core.Models;
 
 namespace Mineral.Language.Parser;
+public class MissingDeclaration: DeclarationBase
+{
+    public Token? Token { get; set; }
+
+}
+
+public class MissingLValue: LValue
+{
+    public ExpressionBase InvalidLValue { get; set; }
+
+    public MissingLValue(ExpressionBase invalidLValue)
+    {
+        InvalidLValue = invalidLValue;
+    }
+}
+
+public class MissingExpression: OperableExpresson
+{
+    public Token? Token { get; set; }
+}
 
 public class MineralParser: TokenParser
 {
@@ -86,7 +106,7 @@ public class MineralParser: TokenParser
         else if (AdvanceIfMatch(TokenTypes.Public)) declaration = ParseFunction(true);
         else if (AdvanceIfMatch(TokenTypes.Function)) declaration = ParseFunction(false);
         else if (AdvanceIfMatch(TokenTypes.Module)) declaration = ParseModule();
-        else throw new ParsingException(Current(), $"unexpected token {Current()}");
+        else declaration = AddError(Current(), $"unexpected token {Current()}", DeclarationBase.Missing);
         declaration.Start = start;
          declaration.End = Previous().End;
         return declaration;
@@ -99,7 +119,7 @@ public class MineralParser: TokenParser
     {
         var token = Previous();
         var imports = new List<Token>();
-        Consume(TokenTypes.LCurly, "expect declaration structure: import { \"mod\", ... }");
+        ConsumeOrReturn(TokenTypes.LCurly, "expect declaration structure: import { \"mod\", ... }");
         if (!AdvanceIfMatch(TokenTypes.RCurly))
         {
             do
@@ -107,12 +127,12 @@ public class MineralParser: TokenParser
 
                 DoWithSeek(TokenTypes.Comma, () =>
                 {
-                    var importModule = Consume(TokenTypes.String, "expect import module name");
+                    var importModule = ConsumeOrReturn(TokenTypes.String, "expect import module name");
                     imports.Add(importModule);
                 });
             }
             while (AdvanceIfMatch(TokenTypes.Comma));
-            Consume(TokenTypes.RCurly, "expect enclosing '}' in import declaration");
+            ConsumeOrReturn(TokenTypes.RCurly, "expect enclosing '}' in import declaration");
         }
        
         return new ImportDeclaration(token, imports);
@@ -120,8 +140,8 @@ public class MineralParser: TokenParser
 
     private TypeDeclaration ParseType()
     {
-        var typeName = Consume(TokenTypes.Word, "expect typename");
-        Consume(TokenTypes.LCurly, "expect declaration structure: type TypeName { int field1; ... }");
+        var typeName = ConsumeOrReturn(TokenTypes.Word, "expect typename");
+        ConsumeOrReturn(TokenTypes.LCurly, "expect declaration structure: type TypeName { int field1; ... }");
         var fields = new List<TypeDeclarationField>();
         if (!AdvanceIfMatch(TokenTypes.RCurly))
         {
@@ -136,7 +156,7 @@ public class MineralParser: TokenParser
                 });
 
             } while (!AtEnd() && !Match(TokenTypes.RCurly));
-            Consume(TokenTypes.RCurly, "expect enclosing '}' in type declaration");
+            ConsumeOrReturn(TokenTypes.RCurly, "expect enclosing '}' in type declaration");
         }
 
         return new TypeDeclaration(typeName, fields);
@@ -144,7 +164,7 @@ public class MineralParser: TokenParser
 
     private FunctionDeclaration ParseFunction(bool isPublic)
     {
-        if (isPublic) Consume(TokenTypes.Function, "only functions can have 'pub' modifier");
+        if (isPublic) ConsumeOrReturn(TokenTypes.Function, "only functions can have 'pub' modifier");
         Token? importPath = null;
         if (AdvanceIfMatch(TokenTypes.ImportPath)) importPath = Previous();
         var functionName = Consume(TokenTypes.Word, "expect function name");
@@ -159,18 +179,18 @@ public class MineralParser: TokenParser
                 DoWithSeek(TokenTypes.Comma, () =>
                 {
                     var parameterType = ParseTypeSymbol();
-                    var parameterName = Consume(TokenTypes.Word, "expect parameter name");
+                    var parameterName = ConsumeOrReturn(TokenTypes.Word, "expect parameter name");
                     paramters.Add(new(parameterName, parameterType));
                 });
             } while (AdvanceIfMatch(TokenTypes.Comma));
-            Consume(TokenTypes.RParen, "expect enclosing ')' after function parameter list");
+            ConsumeOrReturn(TokenTypes.RParen, "expect enclosing ')' after function parameter list");
         }
         var returnType = ParseTypeSymbol();
         bool isErrorable = AdvanceIfMatch(TokenTypes.Exclamation);
 
         if (importPath != null)
         {
-            Consume(TokenTypes.Semicolon, "expect ';' after imported function declaration");
+            ConsumeOrReturn(TokenTypes.Semicolon, "expect ';' after imported function declaration");
             return new FunctionDeclaration(functionName, returnType, paramters, new(), isErrorable, isPublic, isExtensionMethod, importPath);
         }
 
@@ -181,7 +201,7 @@ public class MineralParser: TokenParser
 
     private ModuleDeclaration ParseModule()
     {
-        var moduleName = Consume(TokenTypes.Word, "expect module name");
+        var moduleName = ConsumeOrReturn(TokenTypes.Word, "expect module name");
         return new ModuleDeclaration(moduleName);
     }
 
@@ -229,7 +249,7 @@ public class MineralParser: TokenParser
             }
 
             if (!TryConvertToLValue(potentialLValue, out assignmentTarget))
-                throw new ParsingException(Previous(), $"invalid lvalue (expression type {potentialLValue.GetType()})");
+                assignmentTarget = AddError(Previous(), $"invalid lvalue (expression type {potentialLValue.GetType()})", LValue.Missing(potentialLValue));
         }
 
         LValue? errorTarget = null;
@@ -239,9 +259,9 @@ public class MineralParser: TokenParser
         }
 
         var isDerefAssignment = AdvanceIfMatch(TokenTypes.DerefAssignment);
-        if (!isDerefAssignment) Consume(TokenTypes.Assignment, "expect '=' in assignment statement");
+        if (!isDerefAssignment) ConsumeOrReturn(TokenTypes.Assignment, "expect '=' in assignment statement");
         var value = CaptureAssignmentRValue();
-        Consume(TokenTypes.Semicolon, "expect statement to end with ';'");
+        ConsumeOrReturn(TokenTypes.Semicolon, "expect statement to end with ';'");
         if (isDerefAssignment) return new DereferenceAssignmentStatement(assignmentTarget, errorTarget, value);
         return new AssignmentStatement(assignmentTarget, errorTarget, value);
     }
@@ -280,7 +300,7 @@ public class MineralParser: TokenParser
                     block.Add(statement);
                 });
             } while (!AtEnd() && !Match(TokenTypes.RCurly));
-            Consume(TokenTypes.RCurly, "expect enclosing '}' in block");
+            ConsumeOrReturn(TokenTypes.RCurly, "expect enclosing '}' in block");
         }
         else
         {
@@ -293,14 +313,14 @@ public class MineralParser: TokenParser
     private ErrorStatement ParseError()
     {
         var value = CaptureExpression();
-        Consume(TokenTypes.Semicolon, "expect statement to end with ';'");
+        ConsumeOrReturn(TokenTypes.Semicolon, "expect statement to end with ';'");
         return new ErrorStatement(value);
     }
 
     private ReturnStatement ParseReturn()
     {
         var value = CaptureExpression();
-        Consume(TokenTypes.Semicolon, "expect statement to end with ';'");
+        ConsumeOrReturn(TokenTypes.Semicolon, "expect statement to end with ';'");
         return new ReturnStatement(value);
     }
 
@@ -389,14 +409,14 @@ public class MineralParser: TokenParser
                             arguments.Add(argument);
                         });
                     } while (AdvanceIfMatch(TokenTypes.Comma));
-                    Consume(TokenTypes.RParen, "expect enclosing ')' in argument list");
+                    ConsumeOrReturn(TokenTypes.RParen, "expect enclosing ')' in argument list");
                 }
                 lhs =  new CallExpression(lhs, arguments);
             }
             else
             {
                 Advance();
-                var memberToAccess = Consume(TokenTypes.Word, "expect member name after '.'");
+                var memberToAccess = ConsumeOrReturn(TokenTypes.Word, "expect member name after '.'");
                 lhs = new MemberAccessExpression(lhs, memberToAccess);
             }
         }
@@ -428,24 +448,24 @@ public class MineralParser: TokenParser
         {
             // Parse grouped operation
             var expression = CaptureExpression();
-            Consume(TokenTypes.RParen, "expect enclosing ')' in grouping");
+            ConsumeOrReturn(TokenTypes.RParen, "expect enclosing ')' in grouping");
             return expression;
         }
         var isNegative = AdvanceIfMatch(TokenTypes.Subtraction)? -1: 1;
         if (AdvanceIfMatch(TokenTypes.Integer))
         {
             if (int.TryParse(Previous().Lexeme, out var i)) return new LiteralExpression(i * isNegative);
-            throw new ParsingException(Previous(), $"unable to parse value '{Previous().Lexeme}' to integer");
+            return AddError(Previous(), $"unable to parse value '{Previous().Lexeme}' to integer", ExpressionBase.Missing);
         }
         if (AdvanceIfMatch(TokenTypes.Float))
         {
             if (float.TryParse(Previous().Lexeme, out var flt)) return new LiteralExpression(flt * isNegative);
-            throw new ParsingException(Previous(), $"unable to parse value '{Previous().Lexeme}' to float32");
+            return AddError(Previous(), $"unable to parse value '{Previous().Lexeme}' to float32", ExpressionBase.Missing);
         }
         if (AdvanceIfMatch(TokenTypes.Double))
         {
             if (double.TryParse(Previous().Lexeme, out var dbl)) return new LiteralExpression(dbl * isNegative);
-            throw new ParsingException(Previous(), $"unable to parse value '{Previous().Lexeme}' to float64");
+            return AddError(Previous(), $"unable to parse value '{Previous().Lexeme}' to float64", ExpressionBase.Missing);
         }
         if (AdvanceIfMatch(TokenTypes.String))
         {
@@ -458,8 +478,8 @@ public class MineralParser: TokenParser
         if (AdvanceIfMatch(TokenTypes.Char))
         {
             var chr = Encoding.UTF8.GetBytes(Previous().Lexeme);
-            if (chr.Length == 1) return new LiteralExpression(chr[0]); 
-            throw new ParsingException(Previous(), $"unable to parse value '{Previous().Lexeme}' to byte");      
+            if (chr.Length == 1) return new LiteralExpression(chr[0]);
+            return AddError(Previous(), $"unable to parse value '{Previous().Lexeme}' to byte", ExpressionBase.Missing);      
         }
         if (AdvanceIfMatch(TokenTypes.Wide))
         {
@@ -468,18 +488,18 @@ public class MineralParser: TokenParser
             {
                 var chr = Encoding.Unicode.GetBytes(Previous().Lexeme);
                 if (chr.Length == 2) return new LiteralExpression(BitConverter.ToInt16(chr));
-                throw new ParsingException(Previous(), $"unable to parse value '{Previous().Lexeme}' to int16");
+                return AddError(Previous(), $"unable to parse value '{Previous().Lexeme}' to int16", ExpressionBase.Missing);
             }
             else return new IdentifierExpression(Previous()); // identifier w
         }
         if (AdvanceIfMatch(TokenTypes.Hex))
         {
-            Consume(TokenTypes.Integer, "expect integer hex value");
+            ConsumeOrReturn(TokenTypes.Integer, "expect integer hex value");
             if (Previous().Lexeme.Length == 2 && byte.TryParse(Previous().Lexeme, NumberStyles.HexNumber, null, out var b)) return new LiteralExpression((byte)(b * isNegative));
             else if (Previous().Lexeme.Length == 4 && short.TryParse(Previous().Lexeme, NumberStyles.HexNumber, null, out var s)) return new LiteralExpression((short)(s * isNegative));
             else if (Previous().Lexeme.Length == 8 && int.TryParse(Previous().Lexeme, NumberStyles.HexNumber, null, out var i)) return new LiteralExpression(i * isNegative);
             else if (Previous().Lexeme.Length == 16 && long.TryParse(Previous().Lexeme, NumberStyles.HexNumber, null, out var l)) return new LiteralExpression(l * isNegative);
-            throw new ParsingException(Previous(), $"unable to parse hex value '{Previous().Lexeme}'");
+            return AddError(Previous(), $"unable to parse hex value '{Previous().Lexeme}'", ExpressionBase.Missing);
         }
         var token = Current();
         throw new ParsingException(token, $"unexpected token {token}");
@@ -497,7 +517,7 @@ public class MineralParser: TokenParser
         
         while (AdvanceIfMatch(TokenTypes.Dot))
         {
-            var memberToAccess = Consume(TokenTypes.Word, "expect identifier");
+            var memberToAccess = ConsumeOrReturn(TokenTypes.Word, "expect identifier");
             instance = new InstanceMemberLValue(instance, memberToAccess);
         }
         return instance;
@@ -505,7 +525,7 @@ public class MineralParser: TokenParser
 
     private LValue ParseIdentifierLValue()
     {
-        var variableName = Consume(TokenTypes.Word, "expect identifier");
+        var variableName = ConsumeOrReturn(TokenTypes.Word, "expect identifier");
         return new IdentifierLValue(variableName);
     }
 
@@ -575,6 +595,34 @@ public class MineralParser: TokenParser
         value.Start = start;
         value.End = end;
         return value;
+    }
+
+    private Token ConsumeOrReturn(string tokenType, string errorMessage)
+    {
+        if (AdvanceIfMatch(tokenType)) return Previous();
+        _errors.Add(new ParsingException(Current(), errorMessage));
+        return new Token(TokenTypes.Missing, Current().Lexeme, Current().Start, Current().End);
+    }
+
+
+    private MissingDeclaration AddError(Token token, string message, MissingDeclaration tErr)
+    {
+        _errors.Add(new(token, message));
+        tErr.Token = token;
+        return tErr;
+    }
+
+    private MissingExpression AddError(Token token, string message, MissingExpression tErr)
+    {
+        _errors.Add(new(token, message));
+        tErr.Token = token;
+        return tErr;
+    }
+
+    private MissingLValue AddError(Token token, string message, MissingLValue tErr)
+    {
+        _errors.Add(new(token, message));
+        return tErr;
     }
 }
 

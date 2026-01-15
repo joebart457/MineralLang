@@ -75,6 +75,9 @@ public static class TokenTypes
     public const string ImportPath = "ImportPath";
     public const string Wide = "Wide";
     public const string Char = "Char";
+
+    // Special (internal use only)
+    public const string Missing = "Missing";
 }
 
 

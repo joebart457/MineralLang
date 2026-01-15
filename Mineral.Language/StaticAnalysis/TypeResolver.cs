@@ -424,6 +424,9 @@ public class TypeResolver
             case InstanceMemberLValue instanceMemberLValue:
                 ResolveLValue(errors, module, context, instanceMemberLValue);
                 break;
+            case MissingLValue missingLValue:
+                ResolveLValue(errors, module, context, missingLValue);
+                break;
             // We do not include DiscardLValue because that must be handled at the source instead of resolved here
             default:
                 errors.Add(lValue, $"Unkown lValue type '{lValue.GetType()}'");
@@ -457,6 +460,11 @@ public class TypeResolver
         {
             instanceMemberLValue.TagAsType(field.FieldType);
         }
+    }
+
+    private void ResolveLValue(ModuleErrors errors, ModuleContext module, FunctionContext context, MissingLValue missingLValue)
+    {
+
     }
 
 
@@ -651,6 +659,9 @@ public class TypeResolver
             case BinaryExpression binaryExpression:
                 Resolve(errors, module, context, binaryExpression);
                 break;
+            case MissingExpression missingExpression:
+                Resolve(errors, module, context, missingExpression);
+                break;
             default:
                 errors.Add(expression, $"Unknown expression type '{expression.GetType()}'");
                 break;
@@ -668,7 +679,10 @@ public class TypeResolver
             return;
         }
         binaryExpression.TagAsType(resultingType);
+    }
 
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, MissingExpression missingExpression)
+    {
 
     }
 
