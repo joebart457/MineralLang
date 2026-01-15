@@ -21,7 +21,7 @@ public static class TokenTypes
     public const string Dot = "Dot";
     public const string Discard = "Discard";
     public const string DerefAssignment = "DerefAssignment";
-    public const string Cast = "Cast";
+    public const string Colon = "Colon";
 
     // Operators
     public const string Addition = "Addition";
@@ -115,7 +115,7 @@ public static class TokenizerFactory
             new(TokenTypes.BitwiseAnd, "&"),
             new(TokenTypes.BitwiseOr, "|"),
             new(TokenTypes.BitwiseXor, "^"),
-
+            new(TokenTypes.Colon, ":"),
 
             new(TokenTypes.ReferenceType, "ref"),
 

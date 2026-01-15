@@ -135,39 +135,110 @@ internal static class ASTReducer
     {
         if (castExpression.Value is LiteralExpression literalExpression)
         {
-            if (castExpression.IsFloat32() && literalExpression.Value is double dbl)
-            {
-                return new LiteralExpression((float)dbl);
-            }
-            if (castExpression.IsFloat32() && literalExpression.Value is int i)
-            {
-                return new LiteralExpression((float)i);
-            }
-
-            if (castExpression.IsFloat64() && literalExpression.Value is float flt)
-            {
-                return new LiteralExpression((double)flt);
-            }
-            if (castExpression.IsFloat64() && literalExpression.Value is int int2)
-            {
-                return new LiteralExpression((double)int2);
-            }
-
-            if (castExpression.IsInt64() && literalExpression.Value is float flt2)
-            {
-                return new LiteralExpression((int)flt2);
-            }
-            if (castExpression.IsInt64() && literalExpression.Value is double dbl2)
-            {
-                return new LiteralExpression((int)dbl2);
-            }
+            castExpression.Value = ReduceCast(castExpression, literalExpression);
+            castExpression.Value.TagAsType(castExpression.ConcreteType);
+            return castExpression;
         }
+        castExpression.Value = Reduce(castExpression.Value);
         return castExpression;
+    }
+
+    private static LiteralExpression ReduceCast(CastExpression castExpression, LiteralExpression literalExpression)
+    {
+        if (castExpression.IsFloat32() && literalExpression.Value is double dbl)
+        {
+            return new LiteralExpression((float)dbl);
+        }
+        if (castExpression.IsFloat32() && literalExpression.Value is int i)
+        {
+            return new LiteralExpression((float)i);
+        }
+
+        if (castExpression.IsFloat64() && literalExpression.Value is float flt)
+        {
+            return new LiteralExpression((double)flt);
+        }
+        if (castExpression.IsFloat64() && literalExpression.Value is int int2)
+        {
+            return new LiteralExpression((double)int2);
+        }
+
+        if (castExpression.IsInt64() && literalExpression.Value is float flt2)
+        {
+            return new LiteralExpression((int)flt2);
+        }
+        if (castExpression.IsInt64() && literalExpression.Value is double dbl2)
+        {
+            return new LiteralExpression((int)dbl2);
+        }
+
+        if (castExpression.IsInt64() && literalExpression.Value is short s)
+        {
+            return new LiteralExpression((int)s);
+        }
+        if (castExpression.IsInt64() && literalExpression.Value is byte b)
+        {
+            return new LiteralExpression((int)b);
+        }
+
+        if (castExpression.IsInt32() && literalExpression.Value is short st)
+        {
+            return new LiteralExpression((int)st);
+        }
+
+        if (castExpression.IsInt32() && literalExpression.Value is byte bt)
+        {
+            return new LiteralExpression((int)bt);
+        }
+
+        if (castExpression.IsInt16() && literalExpression.Value is long lt)
+        {
+            return new LiteralExpression((short)lt);
+        }
+
+        if (castExpression.IsInt16() && literalExpression.Value is byte bts)
+        {
+            return new LiteralExpression((short)bts);
+        }
+
+        if (castExpression.IsFloat32() && literalExpression.Value is int it)
+        {
+            return new LiteralExpression((float)it);
+        }
+        return literalExpression;
     }
 
     private static OperableExpresson Reduce(SizeOfExpression sizeOfExpression)
     {
         return new LiteralExpression(sizeOfExpression.ConcreteType.GetActualSize());
+    }
+
+    private static OperableExpresson Reduce(CallExpression callExpression)
+    {
+        var args = new List<ExpressionBase>();
+        callExpression.Callee = Reduce(callExpression.Callee);
+        foreach (var arg in callExpression.Arguments) args.Add(Reduce(arg));
+        callExpression.Arguments = args;
+        return callExpression;
+    }
+
+    private static OperableExpresson Reduce(DereferenceExpression dereferenceExpression)
+    {
+        dereferenceExpression.Target = Reduce(dereferenceExpression.Target);
+        return dereferenceExpression;
+    }
+
+    private static OperableExpresson Reduce(BinaryExpression binaryExpression)
+    {
+        binaryExpression.Left = Reduce(binaryExpression.Left);
+        binaryExpression.Right = Reduce(binaryExpression.Right);
+        return binaryExpression;
+    }
+
+    private static OperableExpresson Reduce(MemberAccessExpression memberAccessExpression)
+    {
+        memberAccessExpression.Instance = Reduce(memberAccessExpression.Instance);
+        return memberAccessExpression;
     }
 
     public static ExpressionBase Reduce(ExpressionBase expression)
@@ -178,6 +249,35 @@ internal static class ASTReducer
                 return Reduce(castExpression);
             case SizeOfExpression sizeOfExpression:
                 return Reduce(sizeOfExpression);
+            case CallExpression callExpression: 
+                return Reduce(callExpression);
+            case DereferenceExpression dereferenceExpression:
+                return Reduce(dereferenceExpression);
+            case BinaryExpression binaryExpression: 
+                return Reduce(binaryExpression);
+            case MemberAccessExpression memberAccessExpression:
+                return Reduce(memberAccessExpression);
+            default:
+                return expression;
+        }
+    }
+
+    public static OperableExpresson Reduce(OperableExpresson expression)
+    {
+        switch (expression)
+        {
+            case CastExpression castExpression:
+                return Reduce(castExpression);
+            case SizeOfExpression sizeOfExpression:
+                return Reduce(sizeOfExpression);
+            case CallExpression callExpression:
+                return Reduce(callExpression);
+            case DereferenceExpression dereferenceExpression:
+                return Reduce(dereferenceExpression);
+            case BinaryExpression binaryExpression:
+                return Reduce(binaryExpression);
+            case MemberAccessExpression memberAccessExpression:
+                return Reduce(memberAccessExpression);
             default:
                 return expression;
         }
@@ -191,6 +291,14 @@ internal static class ASTReducer
                 return Reduce(castExpression);
             case SizeOfExpression sizeOfExpression:
                 return Reduce(sizeOfExpression);
+            case CallExpression callExpression:
+                return Reduce(callExpression);
+            case DereferenceExpression dereferenceExpression:
+                return Reduce(dereferenceExpression);
+            case BinaryExpression binaryExpression:
+                return Reduce(binaryExpression);
+            case MemberAccessExpression memberAccessExpression:
+                return Reduce(memberAccessExpression);
             default:
                 return expression;
         }

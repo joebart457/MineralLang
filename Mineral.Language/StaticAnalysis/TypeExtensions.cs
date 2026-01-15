@@ -20,13 +20,16 @@ internal static class TypeExtensions
                 return false;
             if (callableType.Parameters.Count != fromCallableType.Parameters.Count)
                 return false;
+            if (callableType.IsErrorable != fromCallableType.IsErrorable) 
+                return false;
             for (int i = 0; i < callableType.Parameters.Count; i++)
             {
                 var toParamType = callableType.Parameters[i].ParameterType;
                 var fromParamType = fromCallableType.Parameters[i].ParameterType;
                 if (!toParamType.IsEqualTo(fromParamType))
                     return false;
-                if (callableType.Parameters[i].ParameterName.Lexeme != fromCallableType.Parameters[i].ParameterName.Lexeme)
+                if (callableType.Parameters[i].ParameterName.Lexeme == "_") continue; // discard/wildcard
+                if (callableType.Parameters[i].ParameterName.Lexeme != fromCallableType.Parameters[i].ParameterName.Lexeme )
                     return false; // TODO: For now, parameter names must match
             }
             return true;
@@ -50,21 +53,23 @@ internal static class TypeExtensions
     public static bool IsEqualTo(this ConcreteType to, ConcreteType from)
     {
         if (to is NullPointerType || from is NullPointerType) return false; // null type is never equal except in special cases
+        if (to.Module != from.Module) return false;
         if (to is StructType structType)
         {
             if (from is not StructType fromStructType)
                 return false;
-            if (structType.Members.Count != fromStructType.Members.Count) return false;
-            for (int i = 0; i < structType.Members.Count; i++)
-            {
-                var toMember = structType.Members[i];
-                var fromMember = fromStructType.Members[i];
-                if (!toMember.FieldType.IsEqualTo(fromMember.FieldType))
-                    return false;
-                if (toMember.Name.Lexeme != fromMember.Name.Lexeme)
-                    return false;
-            }
-            return true;
+            //if (structType.Members.Count != fromStructType.Members.Count) return false;
+            //for (int i = 0; i < structType.Members.Count; i++)
+            //{
+            //    var toMember = structType.Members[i];
+            //    var fromMember = fromStructType.Members[i];
+            //    if (!toMember.FieldType.IsEqualTo(fromMember.FieldType))
+            //        return false;
+            //    if (toMember.Name.Lexeme != fromMember.Name.Lexeme)
+            //        return false;
+            //}
+            // if they are from the same module and have the same name, they are the same
+            return structType.TypeName.Lexeme == fromStructType.TypeName.Lexeme;
         }
 
         if (to is CallableType callableType)

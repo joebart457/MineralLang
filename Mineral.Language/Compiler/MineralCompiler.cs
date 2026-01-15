@@ -166,7 +166,7 @@ public class MineralCompiler
                 (mem) => _asm.Movsd(Xmm128.XMM0, mem),
                 (xmm) => _asm.MovIfNeeded(Xmm128.XMM0, xmm));
         }
-        else if (returnStatement.ValueToReturn.IsInt64() || returnStatement.ValueToReturn.IsReferenceType() || returnStatement.ValueToReturn.IsStringType())
+        else if (returnStatement.ValueToReturn.IsInt64() || returnStatement.ValueToReturn.IsReferenceType() || returnStatement.ValueToReturn.IsStringType() || returnStatement.ValueToReturn.IsCallableType())
         {
             HandleRMOrImmediate(rm,
                 (mem) => _asm.Mov(Reg64.RAX, mem),
@@ -313,7 +313,7 @@ public class MineralCompiler
                 },
                 (reg) => _asm.Movsd(assignmentTarget, reg));
         }
-        else if (assignmentStatement.AssignmentTarget.IsInt64() || assignmentStatement.AssignmentTarget.IsReferenceType() || assignmentStatement.AssignmentTarget.IsStringType())
+        else if (assignmentStatement.AssignmentTarget.IsInt64() || assignmentStatement.AssignmentTarget.IsReferenceType() || assignmentStatement.AssignmentTarget.IsStringType() || assignmentStatement.AssignmentTarget.IsCallableType())
         {
             HandleRMOrImmediate(rmValue,
                 (mem) =>
@@ -397,7 +397,7 @@ public class MineralCompiler
                 },
                 (reg) => _asm.Movsd(assignmentTarget, reg));
         }
-        else if (dereferenceAssignmentStatement.AssignmentTarget.IsInt64() || dereferenceAssignmentStatement.AssignmentTarget.IsReferenceType() || dereferenceAssignmentStatement.AssignmentTarget.IsStringType())
+        else if (dereferenceAssignmentStatement.AssignmentTarget.IsInt64() || dereferenceAssignmentStatement.AssignmentTarget.IsReferenceType() || dereferenceAssignmentStatement.AssignmentTarget.IsStringType() || dereferenceAssignmentStatement.AssignmentTarget.IsCallableType())
         {
             HandleRMOrImmediate(rmValue,
                 (mem) =>
@@ -790,9 +790,9 @@ public class MineralCompiler
     private RM Compile(BinaryExpression binaryExpression)
     {
         // Here it is assumed binary expressions can only have operands with equal types
-        if (!binaryExpression.Left.ConcreteType.IsEqualTo(binaryExpression.Right.ConcreteType))
+        if (!binaryExpression.Left.ConcreteType.IsAssignableFrom(binaryExpression.Right.ConcreteType))
             throw new InvalidOperationException($"binary {binaryExpression.Operator} is not supported between types '{binaryExpression.Left.ConcreteType}' and '{binaryExpression.Right.ConcreteType}'");
-        if (binaryExpression.Left.IsInt64() || binaryExpression.Left.IsReferenceType() || binaryExpression.Left.IsStringType()) return CompileIntegerResult(binaryExpression);
+        if (binaryExpression.Left.IsInt64() || binaryExpression.Left.IsReferenceType() || binaryExpression.Left.IsStringType() || binaryExpression.Left.IsCallableType()) return CompileIntegerResult(binaryExpression);
         else if (binaryExpression.Left.IsFloat32()) return CompileFloat32Result(binaryExpression);
         else if (binaryExpression.Left.IsFloat64()) return CompileFloat64Result(binaryExpression);
         else if (binaryExpression.Left.IsByteType()) return CompileByteResult(binaryExpression);
@@ -804,9 +804,9 @@ public class MineralCompiler
     private void CompileAsConditionalBlock(BinaryExpression binaryExpression, Action ifBlock, Action elseBlock)
     {
         // Here it is assumed binary expressions can only have operands with equal types
-        if (!binaryExpression.Left.ConcreteType.IsEqualTo(binaryExpression.Right.ConcreteType))
+        if (!binaryExpression.Left.ConcreteType.IsAssignableFrom(binaryExpression.Right.ConcreteType))
             throw new InvalidOperationException($"binary {binaryExpression.Operator} is not supported between types '{binaryExpression.Left.ConcreteType}' and '{binaryExpression.Right.ConcreteType}'");
-        if (binaryExpression.Left.IsInt64() || binaryExpression.Left.IsReferenceType() || binaryExpression.Left.IsStringType()) CompileIntegerResultAsConditionalBlock(binaryExpression, ifBlock, elseBlock);
+        if (binaryExpression.Left.IsInt64() || binaryExpression.Left.IsReferenceType() || binaryExpression.Left.IsStringType() || binaryExpression.Left.IsCallableType()) CompileIntegerResultAsConditionalBlock(binaryExpression, ifBlock, elseBlock);
         else if (binaryExpression.Left.IsFloat32()) CompileFloat32ResultAsConditionalBlock(binaryExpression, ifBlock, elseBlock);
         else if (binaryExpression.Left.IsFloat64()) CompileFloat64ResultAsConditionalBlock(binaryExpression, ifBlock, elseBlock);
         else if (binaryExpression.Left.IsByteType()) CompileByteResultAsConditionalBlock(binaryExpression, ifBlock, elseBlock);

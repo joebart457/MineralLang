@@ -110,6 +110,11 @@ public static class CompilerTypeExtensions
         return expression.ConcreteType is ReferenceType;
     }
 
+    public static bool IsCallableType(this ExpressionBase expression)
+    {
+        return expression.ConcreteType is CallableType;
+    }
+
     public static bool IsStringType(this ExpressionBase expression)
     {
         return expression.ConcreteType.IsEqualTo(NativeTypes.String) || expression.ConcreteType.IsEqualTo(NativeTypes.WString);

@@ -114,4 +114,9 @@ public class NullPointerType : ConcreteType
     public NullPointerType() : base(BuiltinType.Void)
     {
     }
+
+    public override string ToString()
+    {
+        return "nullptr_t";
+    }
 }

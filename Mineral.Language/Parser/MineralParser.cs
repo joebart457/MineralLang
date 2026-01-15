@@ -165,7 +165,6 @@ public class MineralParser: TokenParser
             } while (AdvanceIfMatch(TokenTypes.Comma));
             Consume(TokenTypes.RParen, "expect enclosing ')' after function parameter list");
         }
-
         var returnType = ParseTypeSymbol();
         bool isErrorable = AdvanceIfMatch(TokenTypes.Exclamation);
 
@@ -529,8 +528,9 @@ public class MineralParser: TokenParser
                 var typeArgument = ParseTypeSymbol();
                 typeArguments.Add(typeArgument);
             } while (AdvanceIfMatch(TokenTypes.Comma));
-            Consume(TokenTypes.RBracket, "expect enclosing ']' after type arguments");
             var isErrorable = AdvanceIfMatch(TokenTypes.Exclamation);
+            Consume(TokenTypes.RBracket, "expect enclosing ']' after type arguments");
+
             return new TypeSymbol(module, typename, typeArguments, isErrorable);
         }
         if (AdvanceIfMatch(TokenTypes.ReferenceType))

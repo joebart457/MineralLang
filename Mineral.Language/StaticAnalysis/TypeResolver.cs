@@ -453,18 +453,10 @@ public class TypeResolver
     {
         ResolveLValue(errors, module, context, instanceMemberLValue.Instance);
         var instanceType = instanceMemberLValue.Instance.ConcreteType;
-        if (instanceType is not StructType structType)
+        if (instanceType.TryFindMember(errors, instanceMemberLValue.Member, out var field) && field != null)
         {
-            errors.Add(instanceMemberLValue.Member, $"Cannot access member '{instanceMemberLValue.Member.Lexeme}' of non-struct type '{instanceType}'");
-            return;
+            instanceMemberLValue.TagAsType(field.FieldType);
         }
-        var foundMember = structType.Members.Find(m => m.Name.Lexeme == instanceMemberLValue.Member.Lexeme);
-        if (foundMember == null)
-        {
-            errors.Add(instanceMemberLValue.Member, $"Struct type '{structType}' does not contain member '{instanceMemberLValue.Member.Lexeme}'");
-            return;
-        }
-        instanceMemberLValue.TagAsType(foundMember.FieldType);
     }
 
 

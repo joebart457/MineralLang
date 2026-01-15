@@ -98,6 +98,18 @@ internal class X86Optimizer
             var instr = optimizedInstructions[i];
 
 
+            if (instr is Mov_Reg64_RM64 movReg && movReg.Src is Reg64 srcReg && movReg.Dest.Equals(srcReg))
+            {
+                indicesToRemove.Add(i);
+                break;
+            }
+
+            if (instr is Mov_RM64_Reg64 movRegReg && movRegReg.Src is Reg64 srcReg2 && movRegReg.Dest.Equals(srcReg2))
+            {
+                indicesToRemove.Add(i);
+                break;
+            }
+
             if (instr is Mov_Reg64_RM64 mov && _equivalencies.TryGetValue(mov.Src, out var equivalentReg))
             {
                 

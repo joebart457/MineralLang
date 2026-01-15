@@ -9,26 +9,26 @@ module mem
 
 type allocator {
 	ref[void] hHeap;
-	func[int, ref[void]] allocate;
-	func[ref[void[] deallocate;
+	func[ref[allocator], int, ref[void]!] allocate;
+	func[ref[allocator], ref[void], int!] deallocate;
 }
 
-pub func alloc(this ref[allocator] a, int bytesToReserve): ref[void]! {
-	a.allocate(a, bytesToReserve);
+pub func alloc(this ref[allocator] a, int bytesToReserve) ref[void]! {
+	return a.allocate(a, bytesToReserve);
 }
 
 
 // Windows
 
-func HeapAlloc(ref[void] hHeap, int flags, int bytesToAllocate): ref[void];
-func HeapFree(ref[void] hHeap, int flags, ref[void] pointer): int;
-func GetProcessHeap(): ref[void];
+func `kernel32.dll` HeapAlloc(ref[void] hHeap, int flags, int bytesToAllocate) ref[void];
+func `kernel32.dll` HeapFree(ref[void] hHeap, int flags, ref[void] pointer) int;
+func `kernel32.dll` GetProcessHeap() ref[void];
 
-pub func get_windows_allocator(): ref[allocator]!
+pub func get_windows_allocator() ref[allocator]!
 {	
 	hHeap = GetProcessHeap();
 	hHeap == null? error "unable to retrieve process heap";
-	allocator = HeapAlloc(hHeap, 0, sizeof allocator);
+	allocator = ^ref[allocator] HeapAlloc(hHeap, 0, sizeof allocator);
 	allocator == null? error "allocation failure";
 	allocator.hHeap = hHeap;
 	allocator.allocate = win_allocate;
@@ -36,15 +36,15 @@ pub func get_windows_allocator(): ref[allocator]!
 	return allocator;
 }
 
-pub func free_windows_allocator(ref[allocator] winAllocator): int
+pub func free_windows_allocator(ref[allocator] winAllocator) int
 {
-	return HeapFree(winAllocator.hHeap, 0, winAllocator);	
+	return HeapFree(winAllocator.hHeap, 0, ^ref[void] winAllocator);	
 }
 
-pub func win_allocate(this ref[allocator] a, int bytesToReserve): ref[void]! {
+pub func win_allocate(this ref[allocator] a, int bytesToReserve) ref[void]! {
 	bytesToReserve <= 0? error "Bytes to reserve must be greater than zero";
 	return HeapAlloc(a.hHeap, 0, bytesToReserve);
 }
-pub func win_deallocate(this ref[allocator] a, ref[void] pointer): int {
+pub func win_deallocate(this ref[allocator] a, ref[void] pointer) int! {
 	return HeapFree(a.hHeap, 0, pointer);
 }
