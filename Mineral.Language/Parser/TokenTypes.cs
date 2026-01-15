@@ -56,6 +56,7 @@ public static class TokenTypes
     public const string Deref = "Deref";
     public const string Break = "Break";
     public const string Continue = "Continue";
+    public const string SizeOf = "SizeOf";
 
     public const string Null = "Null";
     public const string Hex = "Hex";
@@ -130,6 +131,7 @@ public static class TokenizerFactory
             new(TokenTypes.Deref, "deref"),
             new(TokenTypes.Break, "Break"),
             new(TokenTypes.Continue, "Continue"),
+            new(TokenTypes.SizeOf, "sizeof"),
 
             new(TokenTypes.Null, "null"),
             new(TokenTypes.Hex, "0x"),

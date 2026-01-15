@@ -644,6 +644,9 @@ public class TypeResolver
             case StackAllocateExpression stackAllocateExpression:
                 Resolve(errors, module, context, stackAllocateExpression);
                 break;
+            case SizeOfExpression sizeOfExpression:
+                Resolve(errors, module, context, sizeOfExpression);
+                break;
             case ReferenceExpression referenceExpression:
                 Resolve(errors, module, context, referenceExpression);
                 break;
@@ -824,6 +827,13 @@ public class TypeResolver
         var typeToAllocate = ResolveDeclaredType(errors, module, stackAllocateExpression.TypeToAllocate);
         stackAllocateExpression.TagAsType(typeToAllocate);
     }
+
+    public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, SizeOfExpression sizeOfExpression)
+    {
+        var typeToAllocate = ResolveDeclaredType(errors, module, sizeOfExpression.TypeSymbol);
+        sizeOfExpression.TagAsType(NativeTypes.Int);
+    }
+
     private void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, ReferenceExpression referenceExpression)
     {
         if (referenceExpression.Instance != null)

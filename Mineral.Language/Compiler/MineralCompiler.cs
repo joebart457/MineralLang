@@ -196,7 +196,7 @@ public class MineralCompiler
         }
         else throw new InvalidOperationException($"unexpected return type during code generation '{returnStatement.ValueToReturn.ConcreteType}'");
 
-        if (_ctx.IsErrorable) _asm.Xor(Reg64.RDX, (RM64)Reg64.RDX); // Zero out error before returning value
+        if (_ctx.IsErrorable && !(returnStatement.ValueToReturn.ConcreteType is CallableType ct && ct.IsErrorable)) _asm.Xor(Reg64.RDX, (RM64)Reg64.RDX); // Zero out error before returning value unless expression is errorable call, then propogate return and error
         _asm.TearDownStackFrame();
         _asm.Ret();
     }

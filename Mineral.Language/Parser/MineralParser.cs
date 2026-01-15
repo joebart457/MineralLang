@@ -410,6 +410,11 @@ public class MineralParser: TokenParser
             var expression = ParseGetOrCallExpression();
             return new DereferenceExpression(expression);
         }
+        if (AdvanceIfMatch(TokenTypes.SizeOf))
+        {
+            var typeSymbol = ParseTypeSymbol();
+            return new SizeOfExpression(typeSymbol);
+        }
         if (AdvanceIfMatch(TokenTypes.Word)) return new IdentifierExpression(Previous());
 
         return Capture(() => ParseLiteralExpression());

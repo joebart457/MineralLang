@@ -165,12 +165,19 @@ internal static class ASTReducer
         return castExpression;
     }
 
+    private static OperableExpresson Reduce(SizeOfExpression sizeOfExpression)
+    {
+        return new LiteralExpression(sizeOfExpression.ConcreteType.GetActualSize());
+    }
+
     public static ExpressionBase Reduce(ExpressionBase expression)
     {
         switch (expression)
         {
             case CastExpression castExpression:
                 return Reduce(castExpression);
+            case SizeOfExpression sizeOfExpression:
+                return Reduce(sizeOfExpression);
             default:
                 return expression;
         }
@@ -182,6 +189,8 @@ internal static class ASTReducer
         {
             case CastExpression castExpression:
                 return Reduce(castExpression);
+            case SizeOfExpression sizeOfExpression:
+                return Reduce(sizeOfExpression);
             default:
                 return expression;
         }
