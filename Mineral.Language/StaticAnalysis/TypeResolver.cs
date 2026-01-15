@@ -36,7 +36,7 @@ public class TypeResolver
             var parameterType = ResolveDeclaredType(errors, module, parameter.ParameterType);
             parameterTypes.Add(parameterType);
         }
-        return new FunctionKey(functionDeclaration.FunctionName, parameterTypes);
+        return new FunctionKey(functionDeclaration.FunctionName, parameterTypes, functionDeclaration.IsExtensionMethod);
     }
 
     private ConcreteType ResolveDeclaredType(ModuleErrors errors, ModuleContext module, TypeSymbol typeSymbol)
@@ -686,7 +686,7 @@ public class TypeResolver
         if (callExpression.Callee is IdentifierExpression identifierExpression)
         {
             var argumentTypes = callExpression.Arguments.Select(arg => arg.ConcreteType).ToList();
-            var functionKey = new FunctionKey(identifierExpression.Symbol, argumentTypes);
+            var functionKey = new FunctionKey(identifierExpression.Symbol, argumentTypes, false);
             if (module.TryGetMethodOverload(functionKey, out var functionContext))
             {
                 callExpression.TagAsType(functionContext.ReturnType);
@@ -695,11 +695,12 @@ public class TypeResolver
             }
         }
         else if (callExpression.Callee is MemberAccessExpression memberAccessExpression 
-            && TryResolveToMethodGroup(errors, module, context, memberAccessExpression, out var methodGroup) 
+            && TryResolveToMethodGroup(errors, module, context, memberAccessExpression, out var methodGroup, out var isExtensionMethod) 
             && methodGroup != null)
         {
             var argumentTypes = callExpression.Arguments.Select(arg => arg.ConcreteType).ToList();
-            var functionKey = new FunctionKey(memberAccessExpression.MemberToAccess, argumentTypes);
+            if (isExtensionMethod) argumentTypes.Insert(0, memberAccessExpression.Instance.ConcreteType); // instance will have been resolved by TryResolveMethodGroup if it returns true for isExtensionMethod
+            var functionKey = new FunctionKey(memberAccessExpression.MemberToAccess, argumentTypes, isExtensionMethod);
             if (!methodGroup.TryGetPublicOverload(functionKey, out var functionContext))
             {
                 errors.Add(callExpression.Callee, $"unable to find overload of function {functionKey}");
@@ -752,6 +753,34 @@ public class TypeResolver
         }
         return false;
     }
+
+    private bool TryResolveToMethodGroup(ModuleErrors errors, ModuleContext module, FunctionContext context, MemberAccessExpression memberAccessExpression, out MethodGroup? methodGroup, out bool isExtensionMethod)
+    {
+        methodGroup = null;
+        isExtensionMethod = false;
+
+        if (memberAccessExpression.Instance is IdentifierExpression identifierExpression)
+        {
+            if (CanResolveToVariable(context, identifierExpression.Symbol)) return false; // inner-scoped variable trumps outer-scoped imported module
+            if (module.TryGetImportedModule(identifierExpression.Symbol, out var importedModule)
+                && importedModule.TryGetMethodGroup(memberAccessExpression.MemberToAccess, out methodGroup))
+            {
+                return true;
+            }
+
+        }
+        Resolve(errors, module, context, memberAccessExpression.Instance);
+        if (!memberAccessExpression.Instance.ConcreteType.TryFindMember(memberAccessExpression.MemberToAccess, out var field)) // no error here, we are just checking if the member exists
+        {
+            // if not, we need to search for an instance function (IE func doSomething(this int i, string param1) ...
+            var declaringModule = memberAccessExpression.Instance.ConcreteType.Module ?? module; // if the type does not have a declared module, look in the current module, note this makes it so builtin types (no declaring module) cannot be extended in this way
+            isExtensionMethod = true;
+            return declaringModule.TryGetMethodGroup(memberAccessExpression.MemberToAccess, out methodGroup);
+        }
+        
+        return false;
+    }
+
 
     public void Resolve(ModuleErrors errors, ModuleContext module, FunctionContext context, IdentifierExpression identifierExpression)
     {
@@ -1033,6 +1062,7 @@ public class ModuleContext
             return false;
         }
         Types[typeName] = type;
+        type.Module = this;
         return true;
     }
 
@@ -1151,6 +1181,7 @@ public class FunctionContext
     public bool IsImported => ImportLibraryPath != null;
     public Token? ImportLibraryPath { get; set; }
     public List<StatementBase> BodyStatements { get; set; }
+    public bool IsExtensionMethod { get; set; }
 
     public CallableType AsConcreteType() => new CallableType(FunctionName, ReturnType, Parameters.Select(kv => new FunctionParameter(kv.Key, kv.Value)).ToList(), IsErrorable);
 
@@ -1183,13 +1214,15 @@ public class FunctionContext
 
 public class FunctionKey
 {
-    public FunctionKey(Token functionName, List<ConcreteType> parameterTypes)
+    public FunctionKey(Token functionName, List<ConcreteType> parameterTypes, bool isExtensionMethod)
     {
         FunctionName = functionName;
         ParameterTypes = parameterTypes;
+        IsExtensionMethod = isExtensionMethod;
     }
     public Token FunctionName { get; set; }
     public List<ConcreteType> ParameterTypes { get; set; }
+    public bool IsExtensionMethod { get; set; }
 
 }
 
@@ -1200,6 +1233,7 @@ public class FunctionKeyEqualityComparer : IEqualityComparer<FunctionKey>
         if (x == null && y == null) return true;
         if (x == null || y == null) return false;
         if (x.FunctionName.Lexeme != y.FunctionName.Lexeme) return false;
+        if (x.IsExtensionMethod != y.IsExtensionMethod) return false;
         if (x.ParameterTypes.Count != y.ParameterTypes.Count) return false;
         for (int i = 0; i < x.ParameterTypes.Count; i++)
         {

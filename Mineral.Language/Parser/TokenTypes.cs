@@ -57,6 +57,7 @@ public static class TokenTypes
     public const string Break = "Break";
     public const string Continue = "Continue";
     public const string SizeOf = "SizeOf";
+    public const string This = "This";
 
     public const string Null = "Null";
     public const string Hex = "Hex";
@@ -132,6 +133,7 @@ public static class TokenizerFactory
             new(TokenTypes.Break, "Break"),
             new(TokenTypes.Continue, "Continue"),
             new(TokenTypes.SizeOf, "sizeof"),
+            new(TokenTypes.This, "this"),
 
             new(TokenTypes.Null, "null"),
             new(TokenTypes.Hex, "0x"),

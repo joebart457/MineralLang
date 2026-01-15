@@ -3153,20 +3153,27 @@ public class MineralCompiler
     {
         // Will always return in RAX or Xmm0, then move to desired reg
 
+        var arguments = callExpression.Arguments;
+        if (callExpression.FunctionContext != null && callExpression.FunctionContext.IsExtensionMethod)
+        {
+            if (callExpression.Callee is not MemberAccessExpression mae) throw new InvalidOperationException("unexpected lhs of extension method call during code generation");
+            arguments.Insert(0, mae.Instance);
+        }
+
         // align stack
 
         // if argument count is odd and greater than 4, we need to subtract an additional 8 bytes from RSP to keep RSP 16 byte aligned
         var additionalStackToSubtract = 0;
-        if (callExpression.Arguments.Count < 4) additionalStackToSubtract += (4 - callExpression.Arguments.Count) * 8;
-        else if (callExpression.Arguments.Count > 4 && ((callExpression.Arguments.Count % 2) == 1)) additionalStackToSubtract = 8;
+        if (arguments.Count < 4) additionalStackToSubtract += (4 - arguments.Count) * 8;
+        else if (arguments.Count > 4 && ((arguments.Count % 2) == 1)) additionalStackToSubtract = 8;
         if (additionalStackToSubtract > 0)
         {
             _asm.Sub(Reg64.RSP, additionalStackToSubtract); // align stack to 16 byte boundary
         }
 
-        for (int i = callExpression.Arguments.Count - 1; i >= 0; i--)
+        for (int i = arguments.Count - 1; i >= 0; i--)
         {
-            var argument = callExpression.Arguments[i];
+            var argument = arguments[i];
             var rmArg = CompileToRMOrImmediate(argument, Reg64.RAX, Xmm128.XMM0);
             HandleRMOrImmediateForPush(rmArg,
                 (mem) => _asm.Push((RM64)mem),
@@ -3184,10 +3191,10 @@ public class MineralCompiler
             if (callExpression.FunctionContext.IsImported)
             {
                 // imported function call
-                var registerPassedArgumentCount = Math.Min(callExpression.Arguments.Count, 4);
+                var registerPassedArgumentCount = Math.Min(arguments.Count, 4);
                 for (int i = 0; i < registerPassedArgumentCount; i++)
                 {
-                    var argument = callExpression.Arguments[i];
+                    var argument = arguments[i];
                     var mem = Mem64.Create(Reg64.RSP, i * 8); // RSP points directly at last pushed value, so first arg should be at offset 0 from rsp
 
                     if (argument.IsFloat32()) _asm.Movss(SelectXmmRegister(i), mem);
@@ -3210,7 +3217,7 @@ public class MineralCompiler
             }
             else throw new InvalidOperationException($"unexpected rm type in call. rm type was '{indirect.GetType()}'");
         }
-        _asm.Add(Reg64.RSP, (callExpression.Arguments.Count * 8) + additionalStackToSubtract); // clear stack of arguments
+        _asm.Add(Reg64.RSP, (arguments.Count * 8) + additionalStackToSubtract); // clear stack of arguments
         if (callExpression.IsFloat32() || callExpression.IsFloat64())
         {
             _asm.MovIfNeeded(desiredXmm, Xmm128.XMM0);

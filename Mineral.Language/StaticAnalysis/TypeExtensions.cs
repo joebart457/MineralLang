@@ -186,6 +186,28 @@ internal static class TypeExtensions
         return false;
     }
 
+    public static bool TryFindMember(this ConcreteType concreteType, Token memberName, out StructTypeField? field)
+    {
+        field = null;
+        StructType? structType = null;
+        if (concreteType is ReferenceType referenceType && referenceType.ReferencedType is StructType potentialStructType)
+            structType = potentialStructType;
+        if (concreteType is StructType potentialStructType2)
+            structType = potentialStructType2;
+        if (structType != null)
+        {
+            var foundMember = structType.Members.Find(m => m.Name.Lexeme == memberName.Lexeme);
+            if (foundMember == null)
+            {
+                return false;
+            }
+            field = foundMember;
+            return true;
+        }
+        return false;
+    }
+
+
     public static bool TryGetResultingTypeFromOperation(this ConcreteType left, ConcreteType right, OperatorType op, out ConcreteType resultType)
     {
         resultType = NativeTypes.Void;

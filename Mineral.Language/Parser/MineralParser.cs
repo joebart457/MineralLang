@@ -150,8 +150,10 @@ public class MineralParser: TokenParser
         var functionName = Consume(TokenTypes.Word, "expect function name");
         Consume(TokenTypes.LParen, "expect parameter list in function declaration: func name(int param1,...) { // Body... } ");
         var paramters = new List<FunctionDeclarationParameter>();
+        bool isExtensionMethod = false;
         if (!AdvanceIfMatch(TokenTypes.RParen))
         {
+            isExtensionMethod = AdvanceIfMatch(TokenTypes.This);
             do
             {
                 DoWithSeek(TokenTypes.Comma, () =>
@@ -170,12 +172,12 @@ public class MineralParser: TokenParser
         if (importPath != null)
         {
             Consume(TokenTypes.Semicolon, "expect ';' after imported function declaration");
-            return new FunctionDeclaration(functionName, returnType, paramters, new(), isErrorable, isPublic, importPath);
+            return new FunctionDeclaration(functionName, returnType, paramters, new(), isErrorable, isPublic, isExtensionMethod, importPath);
         }
 
         var statements = ParseBlock();
 
-        return new FunctionDeclaration(functionName, returnType, paramters, statements, isErrorable, isPublic, importPath);   
+        return new FunctionDeclaration(functionName, returnType, paramters, statements, isErrorable, isPublic, isExtensionMethod, importPath);   
     }
 
     private ModuleDeclaration ParseModule()

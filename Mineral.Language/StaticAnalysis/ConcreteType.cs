@@ -4,6 +4,7 @@ namespace Mineral.Language.StaticAnalysis;
 
 public class ConcreteType
 {
+    public ModuleContext? Module { get; set; }
     public virtual bool IsBuiltin => true;
     public BuiltinType BuiltinType { get; set; }
 
