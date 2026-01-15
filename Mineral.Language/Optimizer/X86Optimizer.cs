@@ -91,7 +91,6 @@ internal class X86Optimizer
         optimizedInstructions = function.Instructions.Select(x => x).ToList();
         removedIndices = new List<int>();
         changedIndices = new List<int>();
-        var indicesToRemove = new List<int>();
 
         for (int i = 0; i < optimizedInstructions.Count; i++)
         {
@@ -100,13 +99,13 @@ internal class X86Optimizer
 
             if (instr is Mov_Reg64_RM64 movReg && movReg.Src is Reg64 srcReg && movReg.Dest.Equals(srcReg))
             {
-                indicesToRemove.Add(i);
+                removedIndices.Add(i);
                 break;
             }
 
             if (instr is Mov_RM64_Reg64 movRegReg && movRegReg.Src is Reg64 srcReg2 && movRegReg.Dest.Equals(srcReg2))
             {
-                indicesToRemove.Add(i);
+                removedIndices.Add(i);
                 break;
             }
 
@@ -121,7 +120,7 @@ internal class X86Optimizer
             if (instr is Mov_RM64_Reg64 mov_rm && !IsReferenced(optimizedInstructions, i+ 1, null, mov_rm.Dest, new()))
             {
                 // if RM is not referenced, no need to move to it
-                indicesToRemove.Add(i);
+                removedIndices.Add(i);
                 break;
             }
 
@@ -129,9 +128,9 @@ internal class X86Optimizer
             // Fallthrough
             Track(instr);
         }
-        foreach (var index in indicesToRemove) optimizedInstructions.RemoveAt(index);
+        foreach (var index in removedIndices) optimizedInstructions.RemoveAt(index);
 
-        return indicesToRemove.Any() || changedIndices.Any();
+        return removedIndices.Any() || changedIndices.Any();
     }
 
 

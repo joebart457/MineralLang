@@ -24,17 +24,7 @@ func `kernel32.dll` HeapAlloc(ref[void] hHeap, int flags, int bytesToAllocate) r
 func `kernel32.dll` HeapFree(ref[void] hHeap, int flags, ref[void] pointer) int;
 func `kernel32.dll` GetProcessHeap() ref[void];
 
-pub func get_windows_allocator() ref[allocator]!
-{	
-	hHeap = GetProcessHeap();
-	hHeap == null? error "unable to retrieve process heap";
-	allocator = ^ref[allocator] HeapAlloc(hHeap, 0, sizeof allocator);
-	allocator == null? error "allocation failure";
-	allocator.hHeap = hHeap;
-	allocator.allocate = win_allocate;
-	allocator.deallocate = win_deallocate;
-	return allocator;
-}
+
 
 pub func free_windows_allocator(ref[allocator] winAllocator) int
 {
@@ -47,4 +37,16 @@ pub func win_allocate(this ref[allocator] a, int bytesToReserve) ref[void]! {
 }
 pub func win_deallocate(this ref[allocator] a, ref[void] pointer) int! {
 	return HeapFree(a.hHeap, 0, pointer);
+}
+
+pub func get_windows_allocator() ref[allocator]!
+{	
+	hHeap = GetProcessHeap();
+	hHeap == null? error "unable to retrieve process heap";
+	allocator = ^ref[allocator] HeapAlloc(hHeap, 0, sizeof allocator);
+	allocator == null? error "allocation failure";
+	allocator.hHeap = hHeap;
+	allocator.allocate = win_allocate;
+	allocator.deallocate = win_deallocate;
+	return allocator;
 }
